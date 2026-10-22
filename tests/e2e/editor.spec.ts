@@ -481,3 +481,59 @@ test('simulation and view controls, dialogs and project management', async ({ pa
   await page.locator('.project-list .project-open', { hasText: 'Inverter chain' }).click();
   await expect.poll(async () => (await circuitState(page)).components.length).toBe(5);
 });
+
+test('push buttons drive 1 only while held; probes adapt to bus width', async ({ page }) => {
+  await place(page, 'button', [0, 0], 'GO');
+  await place(page, 'led', [4, 0], 'lamp');
+  await wire(page, [0, 0], [4, 0]);
+  await expect.poll(() => bits(page, 'c2', 'in')).toBe('0');
+  const btn = await client(page, [-1, 0]);
+  await page.mouse.move(btn.x, btn.y);
+  await page.mouse.down();
+  await expect.poll(() => bits(page, 'c2', 'in')).toBe('1');
+  await page.mouse.up();
+  await expect.poll(() => bits(page, 'c2', 'in')).toBe('0');
+
+  // A probe on a 6-bit bus shows the bus value.
+  await place(page, 'input', [0, 6], 'V');
+  await page.getByLabel('Bit width').fill('6');
+  await page.getByLabel('Bit width').press('Enter');
+  await place(page, 'probe', [6, 6]);
+  await wire(page, [0, 6], [6, 6]);
+  await clickAt(page, [0, 6 - 0.5]);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => bits(page, 'c4', 'in')).toBe('000000');
+  // No width conflict: the probe adopts the bus width.
+  await expect(page.getByTestId('problems-toggle')).toHaveText(/0\s*0\s*0/);
+});
+
+test('watches a register inside the gate-level RAM while writing to it', async ({ page }) => {
+  await page.getByTestId('projects-button').click();
+  await page.getByTestId('sample-ram').click();
+  await expect(page.locator('.breadcrumbs')).toContainText('RAM 4×4');
+
+  // Select the "word 2" register instance and watch its Q output.
+  await clickAt(page, [50, 44]);
+  await page.getByRole('button', { name: 'Watch word 2.Q' }).click();
+  const watch = page.locator('.watch');
+  await expect(watch).toContainText('word 2.Q');
+  await expect(watch).toContainText('0xx');
+
+  // Write 1001 to address 2 by clicking input bits: A = 10, Din = 1001, WE = 1, pulse CLK.
+  await clickAt(page, [-2, 4]); // A bit 1
+  await clickAt(page, [-4, 78]); // Din bit 3
+  await clickAt(page, [-1, 78]); // Din bit 0
+  await clickAt(page, [-1, 70]); // WE
+  await clickAt(page, [-1, 74]); // CLK rises
+  await clickAt(page, [-1, 74]); // CLK falls
+  await expect(watch).toContainText('0x9');
+  await expect.poll(() => bits(page, 'c5', 'in')).toBe('1001'); // Dout reads the selected word
+
+  // The watch keeps working while looking inside another instance.
+  const reg = await client(page, [50, 44]);
+  await page.mouse.dblclick(reg.x, reg.y);
+  await expect(page.locator('.breadcrumbs')).toContainText('word 2');
+  await expect(watch).toContainText('0x9');
+  await watch.getByRole('button', { name: /Stop watching/ }).click();
+  await expect(page.locator('.watch')).toHaveCount(0);
+});

@@ -8,6 +8,7 @@ import { Inspector } from './ui/Inspector.tsx';
 import { CircuitList, Palette } from './ui/Sidebar.tsx';
 import { ProblemsPanel, StatusBar } from './ui/StatusBar.tsx';
 import { Toolbar } from './ui/Toolbar.tsx';
+import { WatchPanel } from './ui/WatchPanel.tsx';
 import type { CanvasController } from './canvas/controller.ts';
 
 export function App({ services, setController }: { services: AppServices; setController: (c: CanvasController | null) => void }): ReactElement {
@@ -28,6 +29,7 @@ export function App({ services, setController }: { services: AppServices; setCon
         <CanvasView onController={setController} />
         <aside className="right">
           <Inspector />
+          <WatchPanel />
           {problemsOpen && <ProblemsPanel onClose={() => setProblemsOpen(false)} />}
         </aside>
         <StatusBar problemsOpen={problemsOpen} onToggleProblems={() => setProblemsOpen((o) => !o)} />

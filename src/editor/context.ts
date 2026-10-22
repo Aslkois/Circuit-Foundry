@@ -5,6 +5,7 @@ import type { Observable } from './state/observable.ts';
 import type { SimulationHost, SimStatus } from './sim/SimulationHost.ts';
 import type { ProjectRepository } from './state/persistence.ts';
 import type { EditorState, EditorStore } from './state/store.ts';
+import type { WatchList } from './state/watches.ts';
 
 export interface AppServices {
   readonly store: EditorStore;
@@ -14,6 +15,7 @@ export interface AppServices {
   readonly controller: () => CanvasController | null;
   readonly actions: AppActions;
   readonly view: ViewObservables;
+  readonly watches: WatchList;
 }
 
 export interface ViewObservables {

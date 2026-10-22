@@ -19,7 +19,9 @@ import {
   type Rotation,
 } from '../../model/index.ts';
 import { useEditor, useServices, useSimStatus } from '../context.ts';
+import { useObservable } from '../state/observable.ts';
 import { Icon } from './icons.tsx';
+import { pinLocationLabel } from './WatchPanel.tsx';
 
 export function formatLogic(v: LogicValue | null): string {
   if (!v) return '—';
@@ -162,6 +164,25 @@ function InputValueEditor({ comp, path }: { comp: ComponentInstance; path: reado
   );
 }
 
+function WatchToggle({ componentId, pin }: { componentId: string; pin: string }): ReactElement {
+  const { watches, store } = useServices();
+  useObservable(watches.items);
+  const { rootCircuitId, path, project } = store.getState();
+  const on = watches.has(rootCircuitId, path, componentId, pin);
+  const label = pinLocationLabel(project, rootCircuitId, path, componentId, pin);
+  return (
+    <button
+      className={`icon-button small watch-toggle${on ? ' on' : ''}`}
+      aria-label={on ? `Stop watching ${label}` : `Watch ${label}`}
+      aria-pressed={on}
+      title={on ? 'Remove from the Watch panel' : 'Add to the Watch panel'}
+      onClick={() => (on ? watches.removeWhere(rootCircuitId, path, componentId, pin) : watches.add({ rootCircuitId, path, componentId, pin, label }))}
+    >
+      <Icon name="eye" size={13} />
+    </button>
+  );
+}
+
 function LiveValues({ comp }: { comp: ComponentInstance }): ReactElement | null {
   const { store, host } = useServices();
   const path = useEditor((s) => s.path);
@@ -191,6 +212,9 @@ function LiveValues({ comp }: { comp: ComponentInstance }): ReactElement | null 
                   {pin.label ?? pin.name}
                 </th>
                 <td className="mono">{formatLogic(v)}</td>
+                <td className="watch-cell">
+                  <WatchToggle componentId={comp.id} pin={pin.name} />
+                </td>
               </tr>
             );
           })}
@@ -300,6 +324,11 @@ function WireInspector({ wireIds }: { wireIds: string[] }): ReactElement {
             </p>
             <p className="mono">{formatLogic(v)}</p>
             {pins.length > 0 && <p className="muted small">Connects: {pins.slice(0, 12).join(', ')}{pins.length > 12 ? '…' : ''}</p>}
+            {net.pins.length > 0 && (
+              <div className="inline-watch">
+                <WatchToggle componentId={net.pins[0].componentId} pin={net.pins[0].pin} /> <span className="muted small">Watch this signal</span>
+              </div>
+            )}
           </div>
         );
       })}

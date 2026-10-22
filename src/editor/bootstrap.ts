@@ -14,6 +14,7 @@ import {
   type ProjectRepository,
 } from './state/persistence.ts';
 import { EditorStore } from './state/store.ts';
+import { WatchList } from './state/watches.ts';
 
 const AUTOSAVE_DELAY_MS = 600;
 
@@ -45,9 +46,15 @@ export async function bootstrap(): Promise<Boot> {
 
   const store = new EditorStore(project);
   const host = new SimulationHost(project, project.mainCircuitId);
+  const watches = new WatchList();
+  let projectId = project.id;
   store.subscribe(() => {
     const s = store.getState();
     host.sync(s.project, s.rootCircuitId);
+    if (s.project.id !== projectId) {
+      projectId = s.project.id;
+      watches.clear();
+    }
   });
 
   let controller: CanvasController | null = null;
@@ -126,7 +133,7 @@ export async function bootstrap(): Promise<Boot> {
     },
   };
 
-  const services: AppServices = { store, host, repo, controller: () => controller, actions, view };
+  const services: AppServices = { store, host, repo, controller: () => controller, actions, view, watches };
 
   window.addEventListener('beforeunload', (e) => {
     if (store.getState().saveStatus !== 'saved') {
