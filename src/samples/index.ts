@@ -461,8 +461,8 @@ export function ramProject(): Project {
         b.wire(probe.pin('in'), { x: 58, y });
         b.wire(buf.pin('out'), { x: 75, y });
       }
-      note(b, 40, 2, 'Write: choose A and Din, set WE = 1, then pulse CLK. Read: choose A and look at Dout.');
-      note(b, 40, 6, 'Each word is a gate-level 4-bit register; tri-state buffers share the read bus.');
+      note(b, 46, -3, 'Write: choose A and Din, set WE = 1, then pulse CLK. Read: choose A and look at Dout.');
+      note(b, 46, -1, 'Each word is a gate-level 4-bit register; tri-state buffers share the read bus.');
     },
     'Four words of four bits: decoder, write-enable gating, gate-level registers and a tri-state read bus.',
   );

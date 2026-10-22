@@ -246,3 +246,71 @@ test('reports an oscillating circuit instead of hanging', async ({ page }) => {
   await page.getByTestId('problems-toggle').click();
   await expect(page.locator('.problems')).toContainText('does not settle');
 });
+
+test('creates a reusable component and uses it in another circuit', async ({ page }) => {
+  // New circuit "Inverter": in → NOT → out.
+  await page.getByRole('button', { name: 'New circuit' }).click();
+  const rename = page.getByLabel('Circuit name');
+  await rename.fill('Inverter');
+  await rename.press('Enter');
+  await expect(page.locator('.breadcrumbs')).toContainText('Inverter');
+  await place(page, 'input', [0, 0], 'in');
+  await place(page, 'not', [6, 0]);
+  await place(page, 'output', [12, 0], 'out');
+  await wire(page, [0, 0], [4, 0]);
+  await wire(page, [8, 0], [12, 0]);
+
+  // The interface is derived from the labelled pins.
+  await clickAt(page, [20, 10]); // click empty canvas to show circuit properties
+  await expect(page.locator('.ports')).toContainText('in');
+  await expect(page.locator('.ports')).toContainText('out');
+
+  // An Inverter cannot be placed inside itself.
+  const row = page.locator('.circuit-row', { hasText: 'Inverter' });
+  await row.hover();
+  await expect(row.getByRole('button', { name: 'Place Inverter' })).toBeDisabled();
+
+  // Back to Main: place two inverters in series between an input and an output.
+  await page.locator('.circuit-row', { hasText: 'Main' }).locator('.circuit-open').click();
+  await expect(page.locator('.breadcrumbs')).toContainText('Main');
+  await place(page, 'input', [0, 0], 'X');
+  await row.hover();
+  await row.getByRole('button', { name: 'Place Inverter' }).click();
+  await clickAt(page, [8, 0]); // instance pins at x = 4 (in) and 12 (out)
+  // Second instance by dragging the circuit from the list onto the canvas.
+  const target = await client(page, [22, 0]);
+  await row.dragTo(page.getByTestId('canvas'), { targetPosition: { x: target.x - (await page.getByTestId('canvas').boundingBox())!.x, y: target.y - (await page.getByTestId('canvas').boundingBox())!.y } });
+  await place(page, 'output', [30, 0], 'Y');
+  await expect.poll(() => componentCount(page)).toBe(4);
+  await wire(page, [0, 0], [4, 0]);
+  await wire(page, [12, 0], [18, 0]);
+  await wire(page, [26, 0], [30, 0]);
+
+  // Main: c1 = X, c2 and c3 = instances, c4 = Y. Two inversions cancel out.
+  await expect.poll(() => bits(page, 'c4', 'in')).toBe('0');
+  await clickAt(page, [-1, 0]);
+  await expect.poll(() => bits(page, 'c4', 'in')).toBe('1');
+
+  // Edit the definition (make it a buffer by removing the NOT and re-wiring): both instances change.
+  await page.locator('.circuit-row', { hasText: 'Inverter' }).locator('.circuit-open').click();
+  await clickAt(page, [6, 0]);
+  await page.keyboard.press('Delete');
+  await wire(page, [4, 0], [8, 0]);
+  await page.locator('.circuit-row', { hasText: 'Main' }).locator('.circuit-open').click();
+  // X is still 1 (state survives edits); with buffers instead of inverters Y = X.
+  await expect.poll(() => bits(page, 'c1', 'out')).toBe('1');
+  await expect.poll(() => bits(page, 'c4', 'in')).toBe('1');
+});
+
+test('places components by dragging them from the palette', async ({ page }) => {
+  const canvas = page.getByTestId('canvas');
+  const box = (await canvas.boundingBox())!;
+  const at = await client(page, [10, 4]);
+  await page.locator('.palette-item[data-type="and"]').dragTo(canvas, { targetPosition: { x: at.x - box.x, y: at.y - box.y } });
+  await expect.poll(() => componentCount(page)).toBe(1);
+  const comp = await page.evaluate(() => {
+    const cf = (window as unknown as { circuitFoundry: { store: { viewedCircuit: { components: { type: string; x: number; y: number }[] } } } }).circuitFoundry;
+    return cf.store.viewedCircuit.components[0];
+  });
+  expect(comp).toMatchObject({ type: 'and', x: 10, y: 4 });
+});

@@ -1,4 +1,4 @@
-import { NetlistError, Simulator, findFeedbackLoops, fromUnsigned, logic, type LogicValue, type OscillationReport } from '../../engine/index.ts';
+import { NetlistError, Simulator, findFeedbackLoops, fromUnsigned, logic, type LogicValue, type OscillationReport, type SimSnapshot } from '../../engine/index.ts';
 import {
   compileProject,
   findCircuit,
@@ -60,6 +60,8 @@ export class SimulationHost {
   private feedbackDiagnostics: Diagnostic[] = [];
   private runtimeDiagnostics: Diagnostic[] = [];
   private compileCount = 0;
+  /** Simulator state of circuits that were simulated before, by root circuit id. */
+  private readonly rootSnapshots = new Map<string, SimSnapshot>();
 
   private rafId = 0;
   private continuation: ReturnType<typeof setTimeout> | null = null;
@@ -93,7 +95,7 @@ export class SimulationHost {
     };
     this.design = compileProject(project, rootId);
     this.sim = new Simulator({ nets: [], components: [] });
-    this.recompile(true);
+    this.recompile(null);
   }
 
   getStatus = (): SimStatus => this.status;
@@ -113,18 +115,28 @@ export class SimulationHost {
     return [...this.runtimeDiagnostics, ...this.design.diagnostics, ...this.feedbackDiagnostics];
   }
 
-  /** Recompile if the project or root changed. */
+  /**
+   * Recompile if the project or root changed. Switching the simulated circuit
+   * keeps the state of the one being left, and restores it when it comes back.
+   */
   sync(project: Project, rootId: string): void {
     if (project === this.project && rootId === this.rootId) return;
-    const rootChanged = rootId !== this.rootId;
+    const nextRoot = findCircuit(project, rootId) ? rootId : project.mainCircuitId;
+    if (project.id !== this.project.id) this.rootSnapshots.clear();
+    let restore: SimSnapshot | null = null;
+    if (nextRoot !== this.rootId) {
+      this.rootSnapshots.set(this.rootId, this.sim.exportState());
+      restore = this.rootSnapshots.get(nextRoot) ?? null;
+    } else if (project.id === this.project.id) {
+      restore = this.sim.exportState();
+    }
     this.project = project;
-    this.rootId = findCircuit(project, rootId) ? rootId : project.mainCircuitId;
-    this.recompile(rootChanged);
+    this.rootId = nextRoot;
+    this.recompile(restore);
   }
 
-  private recompile(fresh: boolean): void {
+  private recompile(previous: SimSnapshot | null): void {
     const t0 = performance.now();
-    const previous = fresh ? null : this.sim.exportState();
     this.design = compileProject(this.project, this.rootId);
     let error: string | null = null;
     try {
