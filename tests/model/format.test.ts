@@ -61,7 +61,7 @@ describe('project file format', () => {
 
   it('applies migrations step by step', () => {
     // Simulate a future format 3 where circuits gained a "notes" field and v1 → v2 renamed "name" to "title".
-    const v1 = serializeProject(halfAdderProject());
+    const v1 = serializeProject(halfAdderProject()).replace(`"formatVersion": ${FORMAT_VERSION}`, '"formatVersion": 1');
     const migrations = {
       1: (doc: Record<string, unknown>) => {
         const p = doc.project as Record<string, unknown>;
@@ -77,6 +77,35 @@ describe('project file format', () => {
     expect(r.fileVersion).toBe(1);
     expect(r.project.name).toBe('Test (migrated)');
     expect(() => parseProject(v1, { 1: migrations[1] }, 3)).toThrow(/No migration from format version 2/);
+  });
+
+  it('round-trips symbols, parameters and bindings', () => {
+    const base = halfAdderProject();
+    const c = base.circuits[0];
+    const p: Project = {
+      ...base,
+      circuits: [
+        {
+          ...c,
+          params: [{ name: 'N', default: 1, min: 1, max: 8, description: 'Width' }],
+          symbol: { width: 8, label: 'HA', ports: { c1: { side: 'top', slot: 0 }, c5: { side: 'right', slot: 1, clock: false } } },
+          components: c.components.map((k) => (k.id === 'c1' ? { ...k, bind: { width: 'N', '@x': 'N*2' } } : k)),
+        },
+      ],
+    };
+    const text = serializeProject(p);
+    expect(text).toContain('"bind":{"@x":"N*2","width":"N"}');
+    expect(text).toMatch(/^ {8}"symbol": \{"width":8,"label":"HA","ports":/m);
+    const loaded = parseProject(text);
+    expect(loaded.project).toEqual(p);
+    expect(serializeProject(loaded.project)).toBe(text);
+  });
+
+  it('loads version 1 files unchanged', () => {
+    const v1 = serializeProject(halfAdderProject()).replace(`"formatVersion": ${FORMAT_VERSION}`, '"formatVersion": 1');
+    const r = parseProject(v1);
+    expect(r).toMatchObject({ fileVersion: 1, migrated: true });
+    expect(r.project).toEqual(halfAdderProject());
   });
 
   it('gives readable errors for malformed files', () => {
@@ -105,6 +134,10 @@ describe('project file format', () => {
       [mutate(p, (d) => ((d.project.circuits as { components: Record<string, unknown>[] }[])[0].components[0].rotation = 45)), /rotation: must be 0, 90, 180 or 270/],
       [mutate(p, (d) => ((d.project.circuits as { components: Record<string, unknown>[] }[])[0].components[0].id = 'a/b')), /not a valid id/],
       [mutate(p, (d) => (d.project.circuits = [])), /at least one circuit/],
+      [mutate(p, (d) => ((d.project.circuits as Record<string, unknown>[])[0].params = [{ name: '2x', default: 1, min: 0, max: 3 }])), /params\[0\]\.name: "2x" is not a valid parameter name/],
+      [mutate(p, (d) => ((d.project.circuits as Record<string, unknown>[])[0].params = [{ name: 'N', default: 9, min: 0, max: 3 }])), /params\[0\]: needs min ≤ default ≤ max/],
+      [mutate(p, (d) => ((d.project.circuits as Record<string, unknown>[])[0].symbol = { ports: { c1: { side: 'middle', slot: 0 } } })), /symbol\.ports\.c1\.side: must be left, right, top or bottom/],
+      [mutate(p, (d) => ((d.project.circuits as { components: Record<string, unknown>[] }[])[0].components[0].bind = { width: 4 })), /bind\.width: must be an expression/],
     ];
     for (const [text, pattern] of cases) {
       expect(() => parseProject(text)).toThrow(ProjectFormatError);

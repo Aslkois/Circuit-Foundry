@@ -1,5 +1,10 @@
 import type { PropValue, Props } from '../types.ts';
-import { intOf, strOf, type ComponentTypeDef, type PinLayout } from './types.ts';
+import { AUTO_WIDTH, intOf, strOf, type ComponentTypeDef, type PinLayout } from './types.ts';
+
+/** Body length of a tunnel flag for its label. */
+export function tunnelLength(label: string): number {
+  return Math.max(2, Math.ceil(label.length * 0.62 + 1.4));
+}
 
 /**
  * Splitter bit assignment. `mapping` lists, for each bus bit starting at bit 0,
@@ -102,6 +107,19 @@ export const WIRING_DEFS: ComponentTypeDef[] = [
         }
       });
       return { pins, bounds: { x: 0, y: 0, w: 2, h: arms.length + 0.5 } };
+    },
+  },
+  {
+    type: 'tunnel',
+    name: 'Tunnel (net label)',
+    category: 'Wiring',
+    description:
+      'Connects to every other tunnel with the same label in this circuit, without drawing a wire. Useful for buses and control signals in large circuits. Adapts to the width of what it touches.',
+    props: [{ name: 'label', label: 'Net name', kind: 'string', default: 'net', help: 'Tunnels with the same name are connected.' }],
+    role: { kind: 'passive' },
+    layout: (props: Props) => {
+      const len = tunnelLength(strOf(props, 'label'));
+      return { pins: [{ name: 'io', dir: 'inout', width: AUTO_WIDTH, x: 0, y: 0 }], bounds: { x: -len, y: -0.7, w: len, h: 1.4 } };
     },
   },
   {

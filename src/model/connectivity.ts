@@ -1,7 +1,7 @@
 import type { PinDirection } from '../engine/primitives/types.ts';
 import { strOf, type CircuitInterface, type LayoutContext } from './catalog/index.ts';
 import { resolveComponent, type ResolvedComponent } from './layout.ts';
-import { pointKey, type Circuit, type Point } from './types.ts';
+import { pointKey, type Circuit, type ComponentInstance, type Point } from './types.ts';
 
 /*
  * Geometric connectivity of one circuit.
@@ -51,24 +51,26 @@ export function pinKey(componentId: string, pin: string): string {
 }
 
 interface CacheEntry {
-  deps: Map<string, CircuitInterface | undefined>;
+  /** Interfaces seen by each subcircuit instance when this entry was computed. */
+  deps: { comp: ComponentInstance; iface: CircuitInterface | undefined }[];
   result: Connectivity;
 }
 
 const cache = new WeakMap<Circuit, CacheEntry>();
 
+function subcircuitDeps(circuit: Circuit, ctx: LayoutContext): CacheEntry['deps'] {
+  const deps: CacheEntry['deps'] = [];
+  for (const c of circuit.components) {
+    if (c.type === 'subcircuit') deps.push({ comp: c, iface: ctx.getInterface(strOf(c.props, 'circuit'), c.props) });
+  }
+  return deps;
+}
+
 /** Connectivity of a circuit; cached per circuit object and the interfaces of the subcircuits it uses. */
 export function analyzeConnectivity(circuit: Circuit, ctx: LayoutContext): Connectivity {
   const hit = cache.get(circuit);
-  if (hit && [...hit.deps].every(([id, iface]) => ctx.getInterface(id) === iface)) return hit.result;
-
-  const deps = new Map<string, CircuitInterface | undefined>();
-  for (const c of circuit.components) {
-    if (c.type === 'subcircuit') {
-      const id = strOf(c.props, 'circuit');
-      deps.set(id, ctx.getInterface(id));
-    }
-  }
+  if (hit && hit.deps.every((d) => ctx.getInterface(strOf(d.comp.props, 'circuit'), d.comp.props) === d.iface)) return hit.result;
+  const deps = subcircuitDeps(circuit, ctx);
   const result = compute(circuit, ctx);
   cache.set(circuit, { deps, result });
   return result;
@@ -139,6 +141,18 @@ function compute(circuit: Circuit, ctx: LayoutContext): Connectivity {
       pinNodes.push({ componentId: comp.id, pin, node: node(pin.x, pin.y) });
       bump(pin.x, pin.y);
     }
+  }
+
+  // Tunnels: every tunnel with the same (non-empty) label joins one net.
+  const tunnels = new Map<string, number>();
+  for (const p of pinNodes) {
+    const rc = components.get(p.componentId)!;
+    if (rc.comp.type !== 'tunnel') continue;
+    const label = strOf(rc.props, 'label').trim();
+    if (!label) continue;
+    const first = tunnels.get(label);
+    if (first === undefined) tunnels.set(label, p.node);
+    else union(first, p.node);
   }
 
   // T junctions: any point of interest on the interior of a wire joins that wire.

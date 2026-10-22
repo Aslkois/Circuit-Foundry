@@ -138,8 +138,9 @@ export class CanvasController {
   /* Scene                                                                */
   /* -------------------------------------------------------------------- */
 
+  /** The circuit on screen, as the viewed instance sees it (parameters applied). */
   private get circuit(): Circuit {
-    return this.store.viewedCircuit;
+    return this.store.displayedCircuit;
   }
 
   private connOf(circuit: Circuit): Connectivity {
@@ -765,7 +766,7 @@ export class CanvasController {
   copy(): boolean {
     const sel = this.store.getState().selection;
     if (selectionSize(sel) === 0) return false;
-    const c = this.circuit;
+    const c = this.store.viewedCircuit;
     this.store.clipboard = {
       components: c.components.filter((x) => sel.components.has(x.id)),
       wires: c.wires.filter((w) => sel.wires.has(w.id)),

@@ -4,25 +4,39 @@ import type { PrimitiveLibrary } from '../engine/primitives/types.ts';
 import { getDef, intOf, normalizeProps, splitterArmBits, strOf, type LayoutContext } from './catalog/index.ts';
 import { analyzeConnectivity, pinKey, type Connectivity } from './connectivity.ts';
 import { sortDiagnostics, type Diagnostic } from './diagnostics.ts';
-import { circuitInterface, projectContext } from './layout.ts';
+import { projectContext } from './layout.ts';
+import { bindingProblems, instanceParamValues, paramDefaults, paramSignature, specialize, type ParamValues } from './params.ts';
 import type { Circuit, Project } from './types.ts';
 
 /*
  * Compilation: hierarchical, geometric circuits → one flat engine netlist.
  *
- * Every subcircuit instance is expanded in place. Inside an instance, Input
- * and Output pin components are not simulated; their nets are merged with the
- * nets attached to the instance's ports, so a port adds no delay and signals
- * can flow in either direction (tri-state buses work across boundaries).
- * Each instance gets its own copy of every component, so state (latches,
- * registers) is per instance.
+ * Definitions are shared. Each circuit (for each distinct set of parameter
+ * values) is analyzed once into a *template*: its primitives, nets, ports and
+ * child instances in local slot numbers. A template is cached on the
+ * circuit's connectivity, so a definition placed hundreds of times is
+ * analyzed once; instantiating it only offsets slot numbers.
  *
- * Engine component keys are instance paths: "c4" at the top level,
- * "c9/c4" for component c4 inside subcircuit instance c9, and so on.
+ * Inside an instance, Input and Output pin components are not simulated:
+ * their nets are merged with the nets attached to the instance's ports, so a
+ * port adds no delay and signals can flow either way (tri-state buses work
+ * across boundaries). Every instance gets its own engine primitives, so state
+ * (latches, registers, memories) is per instance.
+ *
+ * Engine component keys are instance paths: "c4" at the top level, "c9/c4"
+ * for component c4 inside subcircuit instance c9, and so on.
  */
 
+/** Looks up the engine key of a component of an instance. */
+export interface KeyLookup {
+  get(componentId: string): string | undefined;
+}
+
 export interface InstanceNode {
+  /** The circuit as instantiated (with this instance's parameter values applied). */
   readonly circuit: Circuit;
+  /** Parameter values of this instance. */
+  readonly params: ParamValues;
   /** Engine key prefix: "" for the root, "c9/" for instance c9, "c9/c2/" deeper. */
   readonly prefix: string;
   /** Component ids from the root to this instance. */
@@ -30,8 +44,8 @@ export interface InstanceNode {
   readonly connectivity: Connectivity;
   /** Flat net index for each local net id. */
   readonly netMap: Int32Array;
-  /** Engine key of each simulated component, by component id. */
-  readonly keys: ReadonlyMap<string, string>;
+  /** Engine key of each simulated component. */
+  readonly keys: KeyLookup;
   /** Expanded subcircuit instances, by component id. */
   readonly children: ReadonlyMap<string, InstanceNode>;
 }
@@ -45,12 +59,187 @@ export interface CompiledDesign {
   readonly diagnostics: readonly Diagnostic[];
   /** Total number of circuit instances expanded (including the root). */
   readonly instanceCount: number;
+  /** Number of distinct (definition, parameters) templates used. */
+  readonly templateCount: number;
 }
 
 export interface CompileOptions {
   library?: PrimitiveLibrary;
   /** Maximum nesting depth (default 64). */
   maxDepth?: number;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Templates                                                                 */
+/* ------------------------------------------------------------------------ */
+
+interface TemplatePrimitive {
+  readonly id: string;
+  readonly type: string;
+  readonly props: PrimitiveProps;
+  /** Local slot per engine pin; -1 = unconnected. */
+  readonly pins: Int32Array;
+}
+
+interface TemplateChild {
+  readonly id: string;
+  readonly circuitId: string;
+  readonly values: ParamValues;
+  readonly problems: readonly string[];
+  /** Local slot attached to each port (by port id). */
+  readonly portSlots: ReadonlyMap<string, number>;
+}
+
+interface Template {
+  readonly conn: Connectivity;
+  /** Width of every local slot: one per net, then isolated slots for pins on nets with conflicting widths. */
+  readonly slotWidth: readonly number[];
+  readonly prims: readonly TemplatePrimitive[];
+  /** Input pins: user-controlled sources at the root, ports elsewhere. */
+  readonly inputs: readonly { id: string; width: number; slot: number }[];
+  /** Slot of every port (Input/Output pin) by id. */
+  readonly ports: ReadonlyMap<string, number>;
+  /** Bit links as [slotA, bitA, slotB, bitB, ...]. */
+  readonly links: readonly number[];
+  readonly children: readonly TemplateChild[];
+  /** Ids of components that become engine primitives (Input pins only at the root). */
+  readonly primitiveIds: ReadonlySet<string>;
+  readonly inputIds: ReadonlySet<string>;
+}
+
+const templateCache = new WeakMap<Connectivity, Template>();
+
+function buildTemplate(conn: Connectivity, ctx: LayoutContext, library: PrimitiveLibrary): Template {
+  const slotWidth: number[] = conn.nets.map((n) => n.width ?? 1);
+  const newSlot = (width: number) => slotWidth.push(Math.max(1, width)) - 1;
+  const pinSlot = (componentId: string, pin: string, width: number): number => {
+    const netId = conn.pinNet.get(pinKey(componentId, pin));
+    if (netId === undefined) return newSlot(width);
+    // Pins on a net with conflicting widths are isolated so the rest of the design still simulates.
+    return conn.nets[netId].widthConflict ? newSlot(width) : netId;
+  };
+
+  const prims: TemplatePrimitive[] = [];
+  const inputs: { id: string; width: number; slot: number }[] = [];
+  const ports = new Map<string, number>();
+  const links: number[] = [];
+  const children: TemplateChild[] = [];
+
+  for (const comp of conn.circuit.components) {
+    const rc = conn.components.get(comp.id)!;
+    const def = rc.def;
+    if (!def) continue;
+    switch (def.role.kind) {
+      case 'primitive': {
+        const spec = library.get(def.role.primitive);
+        if (!spec) break;
+        const props = def.role.mapProps(rc.props);
+        if (spec.validate(props)) break; // reported as invalid-props
+        const pins = Int32Array.from(spec.pins(props), (ep) => {
+          const lp = rc.pins.find((p) => p.name === ep.name);
+          return lp ? pinSlot(comp.id, lp.name, ep.width) : -1;
+        });
+        prims.push({ id: comp.id, type: def.role.primitive, props, pins });
+        break;
+      }
+      case 'inputPort': {
+        const width = intOf(rc.props, 'width');
+        const slot = pinSlot(comp.id, 'out', width);
+        inputs.push({ id: comp.id, width, slot });
+        ports.set(comp.id, slot);
+        break;
+      }
+      case 'outputPort':
+        ports.set(comp.id, pinSlot(comp.id, 'in', intOf(rc.props, 'width')));
+        break;
+      case 'splitter': {
+        const bus = pinSlot(comp.id, 'bus', intOf(rc.props, 'busWidth'));
+        splitterArmBits(rc.props).forEach((bits, arm) => {
+          if (bits.length === 0) return;
+          const s = pinSlot(comp.id, `f${arm}`, bits.length);
+          bits.forEach((bit, j) => links.push(bus, bit, s, j));
+        });
+        break;
+      }
+      case 'subcircuit': {
+        const circuitId = strOf(rc.props, 'circuit');
+        const iface = ctx.getInterface(circuitId, comp.props);
+        if (!iface) break; // reported as missing-circuit
+        const { values, problems } = instanceParamValues({ id: circuitId, name: '', components: [], wires: [], params: iface.params }, comp.props);
+        const portSlots = new Map<string, number>();
+        for (const p of [...iface.inputs, ...iface.outputs]) portSlots.set(p.id, pinSlot(comp.id, p.id, p.width));
+        children.push({ id: comp.id, circuitId, values, problems, portSlots });
+        break;
+      }
+      case 'passive':
+        break;
+    }
+  }
+  return {
+    conn,
+    slotWidth,
+    prims,
+    inputs,
+    ports,
+    links,
+    children,
+    primitiveIds: new Set(prims.map((p) => p.id)),
+    inputIds: new Set(inputs.map((i) => i.id)),
+  };
+}
+
+function templateFor(conn: Connectivity, ctx: LayoutContext, library: PrimitiveLibrary): Template {
+  if (library !== defaultLibrary) return buildTemplate(conn, ctx, library);
+  let t = templateCache.get(conn);
+  if (!t) {
+    t = buildTemplate(conn, ctx, library);
+    templateCache.set(conn, t);
+  }
+  return t;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Instantiation                                                             */
+/* ------------------------------------------------------------------------ */
+
+class Node implements InstanceNode {
+  readonly circuit: Circuit;
+  readonly params: ParamValues;
+  readonly prefix: string;
+  readonly path: readonly string[];
+  readonly children = new Map<string, Node>();
+  readonly keys: KeyLookup;
+  readonly template: Template;
+  /** First global slot of this instance. */
+  readonly base: number;
+  private readonly slotNet: { map: Int32Array | null };
+  private cachedNetMap: Int32Array | null = null;
+
+  constructor(template: Template, circuit: Circuit, params: ParamValues, prefix: string, path: readonly string[], base: number, isRoot: boolean, slotNet: { map: Int32Array | null }) {
+    this.template = template;
+    this.circuit = circuit;
+    this.params = params;
+    this.prefix = prefix;
+    this.path = path;
+    this.base = base;
+    this.slotNet = slotNet;
+    this.keys = {
+      get: (id: string) => (template.primitiveIds.has(id) || (isRoot && template.inputIds.has(id)) ? prefix + id : undefined),
+    };
+  }
+
+  get connectivity(): Connectivity {
+    return this.template.conn;
+  }
+
+  get netMap(): Int32Array {
+    if (!this.cachedNetMap) {
+      const map = this.slotNet.map!;
+      const n = this.template.conn.nets.length;
+      this.cachedNetMap = Int32Array.from({ length: n }, (_, i) => map[this.base + i]);
+    }
+    return this.cachedNetMap;
+  }
 }
 
 export function compileProject(project: Project, rootCircuitId: string, options: CompileOptions = {}): CompiledDesign {
@@ -60,6 +249,7 @@ export function compileProject(project: Project, rootCircuitId: string, options:
   const byId = new Map(project.circuits.map((c) => [c.id, c]));
   const diagnostics: Diagnostic[] = [];
   const diagnosed = new Set<string>();
+  const usedTemplates = new Set<Template>();
 
   const root = byId.get(rootCircuitId);
   if (!root) {
@@ -70,17 +260,13 @@ export function compileProject(project: Project, rootCircuitId: string, options:
       root: null,
       diagnostics: [{ severity: 'error', code: 'missing-root', message: `Circuit "${rootCircuitId}" does not exist.`, circuitId: rootCircuitId }],
       instanceCount: 0,
+      templateCount: 0,
     };
   }
 
-  // Union-find over net slots.
+  // Union-find over global slots.
   const slotWidth: number[] = [];
   const parent: number[] = [];
-  const newSlot = (width: number): number => {
-    slotWidth.push(width);
-    parent.push(parent.length);
-    return parent.length - 1;
-  };
   const find = (x: number): number => {
     while (parent[x] !== x) {
       parent[x] = parent[parent[x]];
@@ -94,12 +280,11 @@ export function compileProject(project: Project, rootCircuitId: string, options:
     if (x !== y) parent[Math.max(x, y)] = Math.min(x, y);
   };
 
-  interface PendingComponent {
-    key: string;
-    type: string;
-    props: PrimitiveProps;
-    pins: number[];
-  }
+  const comps: { key: string; type: string; props: PrimitiveProps; pins: ArrayLike<number>; base: number }[] = [];
+  const links: number[] = [];
+  const slotNet: { map: Int32Array | null } = { map: null };
+  let instanceCount = 0;
+
   const cyclicCache = new Map<string, boolean>();
   const cyclic = (parentId: string, childId: string): boolean => {
     const k = `${parentId}>${childId}`;
@@ -110,159 +295,119 @@ export function compileProject(project: Project, rootCircuitId: string, options:
     }
     return v;
   };
-  const comps: PendingComponent[] = [];
-  const links: [number, number, number, number][] = [];
-  let instanceCount = 0;
 
-  interface MutableNode {
-    circuit: Circuit;
-    prefix: string;
-    path: string[];
-    connectivity: Connectivity;
-    slots: number[];
-    keys: Map<string, string>;
-    children: Map<string, MutableNode>;
-  }
-
-  const expand = (circuit: Circuit, path: string[], ports: Map<string, number> | null, stack: string[]): MutableNode => {
+  const instantiate = (raw: Circuit, values: ParamValues, path: string[], ports: Map<string, number> | null, stack: string[]): Node => {
     instanceCount++;
+    const circuit = specialize(raw, values);
     const conn = analyzeConnectivity(circuit, ctx);
-    if (!diagnosed.has(circuit.id)) {
-      diagnosed.add(circuit.id);
+    const template = templateFor(conn, ctx, library);
+    usedTemplates.add(template);
+    const diagKey = `${raw.id}|${paramSignature(values)}`;
+    if (!diagnosed.has(diagKey)) {
+      diagnosed.add(diagKey);
       diagnoseCircuit(circuit, conn, project, ctx, diagnostics);
-    }
-    const prefix = path.length === 0 ? '' : `${path.join('/')}/`;
-    const slots = conn.nets.map((n) => newSlot(n.width ?? 1));
-    const node: MutableNode = { circuit, prefix, path, connectivity: conn, slots, keys: new Map(), children: new Map() };
-
-    const pinSlot = (componentId: string, pin: string, width: number): number => {
-      const netId = conn.pinNet.get(pinKey(componentId, pin));
-      if (netId === undefined) return newSlot(Math.max(1, width));
-      const net = conn.nets[netId];
-      // Pins on a net with conflicting widths are isolated so the rest of the design still simulates.
-      if (net.widthConflict) return newSlot(Math.max(1, width));
-      return slots[netId];
-    };
-
-    for (const comp of circuit.components) {
-      const rc = conn.components.get(comp.id)!;
-      const def = rc.def;
-      if (!def) continue;
-      const key = prefix + comp.id;
-      switch (def.role.kind) {
-        case 'primitive': {
-          const spec = library.get(def.role.primitive);
-          if (!spec) continue;
-          const pprops = def.role.mapProps(rc.props);
-          if (spec.validate(pprops)) continue; // reported as invalid-props
-          const pins = spec.pins(pprops).map((ep) => {
-            const lp = rc.pins.find((p) => p.name === ep.name);
-            return lp ? pinSlot(comp.id, lp.name, ep.width) : -1;
-          });
-          comps.push({ key, type: def.role.primitive, props: pprops, pins });
-          node.keys.set(comp.id, key);
-          break;
-        }
-        case 'inputPort': {
-          const width = intOf(rc.props, 'width');
-          const s = pinSlot(comp.id, 'out', width);
-          if (ports === null) {
-            comps.push({ key, type: 'input', props: { width }, pins: [s] });
-            node.keys.set(comp.id, key);
-          } else {
-            const outer = ports.get(comp.id);
-            if (outer !== undefined) union(s, outer);
-          }
-          break;
-        }
-        case 'outputPort': {
-          if (ports !== null) {
-            const outer = ports.get(comp.id);
-            if (outer !== undefined) union(pinSlot(comp.id, 'in', intOf(rc.props, 'width')), outer);
-          }
-          break;
-        }
-        case 'splitter': {
-          const bus = pinSlot(comp.id, 'bus', intOf(rc.props, 'busWidth'));
-          splitterArmBits(rc.props).forEach((bits, arm) => {
-            if (bits.length === 0) return;
-            const s = pinSlot(comp.id, `f${arm}`, bits.length);
-            bits.forEach((bit, j) => links.push([bus, bit, s, j]));
-          });
-          break;
-        }
-        case 'subcircuit': {
-          const targetId = strOf(rc.props, 'circuit');
-          const target = byId.get(targetId);
-          // Missing targets and instances that are part of a cycle are reported by diagnoseCircuit.
-          if (!target || stack.includes(targetId) || cyclic(circuit.id, targetId)) continue;
-          if (path.length >= maxDepth) {
-            diagnostics.push({
-              severity: 'error',
-              code: 'recursive-subcircuit',
-              message: `Subcircuits are nested more than ${maxDepth} levels deep here; deeper levels are not simulated.`,
-              circuitId: circuit.id,
-              componentIds: [comp.id],
-            });
-            continue;
-          }
-          const iface = circuitInterface(target);
-          const childPorts = new Map<string, number>();
-          for (const p of [...iface.inputs, ...iface.outputs]) childPorts.set(p.id, pinSlot(comp.id, p.id, p.width));
-          const child = expand(target, [...path, comp.id], childPorts, [...stack, targetId]);
-          node.children.set(comp.id, child);
-          break;
-        }
-        case 'passive':
-          break;
+      for (const p of bindingProblems(raw, values)) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'binding',
+          message: `Binding ${p.prop} = "${p.expr}" failed: ${p.message}. The stored value is used.`,
+          circuitId: raw.id,
+          componentIds: [p.componentId],
+        });
       }
+    }
+
+    const prefix = path.length === 0 ? '' : `${path.join('/')}/`;
+    const base = slotWidth.length;
+    for (const w of template.slotWidth) {
+      slotWidth.push(w);
+      parent.push(parent.length);
+    }
+    const node = new Node(template, circuit, values, prefix, path, base, ports === null, slotNet);
+
+    for (const p of template.prims) comps.push({ key: prefix + p.id, type: p.type, props: p.props, pins: p.pins, base });
+    if (ports === null) {
+      for (const i of template.inputs) comps.push({ key: prefix + i.id, type: 'input', props: { width: i.width }, pins: [i.slot], base });
+    } else {
+      for (const [id, slot] of template.ports) {
+        const outer = ports.get(id);
+        if (outer !== undefined) union(base + slot, outer);
+      }
+    }
+    for (let i = 0; i < template.links.length; i += 4) {
+      links.push(base + template.links[i], template.links[i + 1], base + template.links[i + 2], template.links[i + 3]);
+    }
+
+    for (const child of template.children) {
+      const target = byId.get(child.circuitId);
+      // Missing targets and instances that are part of a cycle are reported by diagnoseCircuit.
+      if (!target || stack.includes(child.circuitId) || cyclic(raw.id, child.circuitId)) continue;
+      if (path.length >= maxDepth) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'recursive-subcircuit',
+          message: `Subcircuits are nested more than ${maxDepth} levels deep here; deeper levels are not simulated.`,
+          circuitId: raw.id,
+          componentIds: [child.id],
+        });
+        continue;
+      }
+      for (const problem of child.problems) {
+        diagnostics.push({ severity: 'warning', code: 'invalid-props', message: `Subcircuit ${problem}.`, circuitId: raw.id, componentIds: [child.id] });
+      }
+      const childPorts = new Map<string, number>();
+      for (const [id, slot] of child.portSlots) childPorts.set(id, base + slot);
+      node.children.set(child.id, instantiate(target, child.values, [...path, child.id], childPorts, [...stack, child.circuitId]));
     }
     return node;
   };
 
-  const rootNode = expand(root, [], null, [root.id]);
+  const rootNode = instantiate(root, paramDefaults(root), [], null, [root.id]);
 
   // Collapse slots into nets.
-  const netOfRoot = new Map<number, number>();
+  const map = new Int32Array(slotWidth.length);
   const nets: { width: number }[] = [];
-  const netOf = (slot: number): number => {
-    const r = find(slot);
+  const netOfRoot = new Map<number, number>();
+  for (let s = 0; s < slotWidth.length; s++) {
+    const r = find(s);
     let n = netOfRoot.get(r);
     if (n === undefined) {
       n = nets.length;
       netOfRoot.set(r, n);
       nets.push({ width: slotWidth[r] });
     }
-    return n;
-  };
+    map[s] = n;
+  }
+  slotNet.map = map;
 
   const components: NetlistComponent[] = comps.map((c) => ({
     key: c.key,
     type: c.type,
     props: c.props,
-    pins: c.pins.map((s) => (s < 0 ? -1 : netOf(s))),
+    pins: Array.from(c.pins, (s) => (s < 0 ? -1 : map[c.base + s])),
   }));
-  const bitLinks: BitLink[] = links.map(([a, bitA, b, bitB]) => ({ netA: netOf(a), bitA, netB: netOf(b), bitB }));
-
-  const freeze = (n: MutableNode): InstanceNode => ({
-    circuit: n.circuit,
-    prefix: n.prefix,
-    path: n.path,
-    connectivity: n.connectivity,
-    netMap: Int32Array.from(n.slots, netOf),
-    keys: n.keys,
-    children: new Map([...n.children].map(([id, child]) => [id, freeze(child)])),
-  });
-  const frozenRoot = freeze(rootNode);
+  const bitLinks: BitLink[] = [];
+  for (let i = 0; i < links.length; i += 4) bitLinks.push({ netA: map[links[i]], bitA: links[i + 1], netB: map[links[i + 2]], bitB: links[i + 3] });
 
   return {
     project,
     rootCircuitId,
     netlist: { nets, components, links: bitLinks },
-    root: frozenRoot,
-    diagnostics: sortDiagnostics(diagnostics),
+    root: rootNode,
+    diagnostics: sortDiagnostics(dedupe(diagnostics)),
     instanceCount,
+    templateCount: usedTemplates.size,
   };
+}
+
+function dedupe(list: Diagnostic[]): Diagnostic[] {
+  const seen = new Set<string>();
+  return list.filter((d) => {
+    const k = `${d.circuitId}|${d.code}|${d.message}|${(d.componentIds ?? []).join(',')}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 /** Find the instance node for a path of subcircuit component ids. */

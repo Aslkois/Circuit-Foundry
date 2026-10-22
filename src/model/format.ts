@@ -1,11 +1,26 @@
-import { ID_PATTERN, ROTATIONS, type Circuit, type ComponentInstance, type Project, type PropValue, type Rotation, type Wire } from './types.ts';
+import {
+  ID_PATTERN,
+  PARAM_NAME_PATTERN,
+  PORT_SIDES,
+  ROTATIONS,
+  type Circuit,
+  type CircuitSymbol,
+  type ComponentInstance,
+  type ParamDef,
+  type PortPlacement,
+  type PortSide,
+  type Project,
+  type PropValue,
+  type Rotation,
+  type Wire,
+} from './types.ts';
 
 /*
  * Project file format (see docs/project-format.md).
  *
  *   {
  *     "format": "circuit-foundry-project",
- *     "formatVersion": 1,
+ *     "formatVersion": 2,
  *     "generator": "Circuit Foundry 0.1.0",
  *     "project": { id, name, mainCircuitId, createdAt, modifiedAt, circuits: [...] }
  *   }
@@ -18,10 +33,17 @@ import { ID_PATTERN, ROTATIONS, type Circuit, type ComponentInstance, type Proje
  *  - Files from a newer version are refused rather than silently dropping
  *    data this build does not understand.
  *  - Unknown component types and unknown props are preserved verbatim.
+ *
+ * History:
+ *  1  Initial format.
+ *  2  Circuits gain an optional "symbol" (port sides and slots, body width,
+ *     label) and "params" (parameter declarations); components gain an
+ *     optional "bind" (property → expression). Version 1 files are valid
+ *     version 2 files, so the migration only changes the number.
  */
 
 export const FORMAT_ID = 'circuit-foundry-project';
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 2;
 export const GENERATOR = 'Circuit Foundry 0.1.0';
 
 export class ProjectFormatError extends Error {
@@ -35,7 +57,9 @@ export class ProjectFormatError extends Error {
 export type Migration = (doc: Record<string, unknown>) => Record<string, unknown>;
 
 /** Registered migrations, keyed by the version they upgrade *from*. */
-export const MIGRATIONS: Readonly<Record<number, Migration>> = {};
+export const MIGRATIONS: Readonly<Record<number, Migration>> = {
+  1: (doc) => doc,
+};
 
 export interface LoadResult {
   readonly project: Project;
@@ -67,9 +91,15 @@ export function serializeProject(project: Project): string {
     lines.push(`        "id": ${j(c.id)},`);
     lines.push(`        "name": ${j(c.name)},`);
     if (c.description) lines.push(`        "description": ${j(c.description)},`);
+    if (c.params?.length) {
+      lines.push('        "params": [');
+      c.params.forEach((p, i) => lines.push(`          ${j(p)}${i < c.params!.length - 1 ? ',' : ''}`));
+      lines.push('        ],');
+    }
+    if (c.symbol) lines.push(`        "symbol": ${j(c.symbol)},`);
     lines.push('        "components": [');
     c.components.forEach((k, i) => {
-      const item = j({ id: k.id, type: k.type, x: k.x, y: k.y, rotation: k.rotation, props: sortedProps(k.props) });
+      const item = j({ id: k.id, type: k.type, x: k.x, y: k.y, rotation: k.rotation, props: sortedProps(k.props), ...(k.bind ? { bind: sortedProps(k.bind) } : {}) });
       lines.push(`          ${item}${i < c.components.length - 1 ? ',' : ''}`);
     });
     lines.push('        ],');
@@ -87,8 +117,8 @@ export function serializeProject(project: Project): string {
   return `${lines.join('\n')}\n`;
 }
 
-function sortedProps(props: Readonly<Record<string, PropValue>>): Record<string, PropValue> {
-  const out: Record<string, PropValue> = {};
+function sortedProps<T extends PropValue>(props: Readonly<Record<string, T>>): Record<string, T> {
+  const out: Record<string, T> = {};
   for (const k of Object.keys(props).sort()) out[k] = props[k];
   return out;
 }
@@ -131,7 +161,7 @@ class Checker {
   readonly path: string[] = [];
 
   fail(msg: string): never {
-    throw new ProjectFormatError(`Invalid project file at ${this.path.join('.') || 'top level'}: ${msg}`);
+    throw new ProjectFormatError(`Invalid project file at ${this.path.join('.').replaceAll('.[', '[') || 'top level'}: ${msg}`);
   }
 
   at<T>(segment: string, fn: () => T): T {
@@ -223,13 +253,64 @@ function validateCircuit(ck: Checker, value: unknown): Circuit {
     }),
   );
   const description = ck.string(c, 'description', true);
+  const params = c.params === undefined ? undefined : ck.at('params', () => validateParams(ck, c.params));
+  const symbol = c.symbol === undefined ? undefined : ck.at('symbol', () => validateSymbol(ck, c.symbol));
   return {
     id: ck.id(c, 'id'),
     name: ck.string(c, 'name'),
     ...(description ? { description } : {}),
     components,
     wires,
+    ...(symbol ? { symbol } : {}),
+    ...(params?.length ? { params } : {}),
   };
+}
+
+function validateParams(ck: Checker, value: unknown): ParamDef[] {
+  if (!Array.isArray(value)) ck.fail('expected a list');
+  const names = new Set<string>();
+  return value.map((v, i) =>
+    ck.at(`[${i}]`, () => {
+      const o = ck.object(v);
+      const name = ck.string(o, 'name');
+      if (!PARAM_NAME_PATTERN.test(name)) ck.at('name', () => ck.fail(`"${name}" is not a valid parameter name (a letter or _, then letters, digits or _)`));
+      if (names.has(name)) ck.fail(`duplicate parameter "${name}"`);
+      names.add(name);
+      const def = ck.int(o, 'default');
+      const min = ck.int(o, 'min');
+      const max = ck.int(o, 'max');
+      if (!(min <= def && def <= max)) ck.fail('needs min ≤ default ≤ max');
+      const description = ck.string(o, 'description', true);
+      return { name, default: def, min, max, ...(description ? { description } : {}) };
+    }),
+  );
+}
+
+function validateSymbol(ck: Checker, value: unknown): CircuitSymbol {
+  const o = ck.object(value);
+  const out: { width?: number; label?: string; ports?: Record<string, PortPlacement> } = {};
+  if (o.width !== undefined) {
+    const w = ck.int(o, 'width');
+    if (w < 2 || w > 80) ck.at('width', () => ck.fail('must be between 2 and 80'));
+    out.width = w;
+  }
+  if (o.label !== undefined) out.label = ck.string(o, 'label');
+  if (o.ports !== undefined) {
+    const ports = ck.at('ports', () => ck.object(o.ports));
+    out.ports = {};
+    for (const [id, raw] of Object.entries(ports)) {
+      out.ports[id] = ck.at(`ports.${id}`, () => {
+        const p = ck.object(raw);
+        const side = ck.string(p, 'side');
+        if (!PORT_SIDES.includes(side as PortSide)) ck.at('side', () => ck.fail('must be left, right, top or bottom'));
+        const slot = ck.int(p, 'slot');
+        if (slot < 0 || slot > 255) ck.at('slot', () => ck.fail('must be between 0 and 255'));
+        if (p.clock !== undefined && typeof p.clock !== 'boolean') ck.at('clock', () => ck.fail('must be true or false'));
+        return { side: side as PortSide, slot, ...(typeof p.clock === 'boolean' ? { clock: p.clock } : {}) };
+      });
+    }
+  }
+  return out;
 }
 
 function validateComponent(ck: Checker, value: unknown): ComponentInstance {
@@ -247,6 +328,18 @@ function validateComponent(ck: Checker, value: unknown): ComponentInstance {
     }
     return out;
   });
+  const bind =
+    o.bind === undefined
+      ? undefined
+      : ck.at('bind', () => {
+          const obj = ck.object(o.bind);
+          const out: Record<string, string> = {};
+          for (const [k, v] of Object.entries(obj)) {
+            if (typeof v !== 'string') ck.at(k, () => ck.fail('must be an expression (text)'));
+            out[k] = v as string;
+          }
+          return out;
+        });
   return {
     id: ck.id(o, 'id'),
     type: ck.string(o, 'type'),
@@ -254,6 +347,7 @@ function validateComponent(ck: Checker, value: unknown): ComponentInstance {
     y: ck.int(o, 'y'),
     rotation: rotation as Rotation,
     props,
+    ...(bind && Object.keys(bind).length ? { bind } : {}),
   };
 }
 

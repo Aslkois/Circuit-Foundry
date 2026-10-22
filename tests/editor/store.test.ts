@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addComponents, createComponent, deleteItems, type Project } from '../../src/model/index.ts';
-import { addersProject } from '../../src/samples/index.ts';
+import { CircuitRunner, addComponents, createComponent, deleteItems, type Project } from '../../src/model/index.ts';
+import { addersProject, rippleAdderProject } from '../../src/samples/index.ts';
 import { EditorStore, resolvePath } from '../../src/editor/state/store.ts';
 
 function blank(): Project {
@@ -24,6 +24,32 @@ describe('EditorStore', () => {
     add('xor', 20);
     expect(store.getState().canRedo).toBe(false);
     expect(store.viewedCircuit.components.map((c) => c.type)).toEqual(['and', 'xor']);
+  });
+
+  it('keeps instances wired when a definition gains a port, in one undo step', () => {
+    const project = rippleAdderProject();
+    const store = new EditorStore(project);
+    const sums = (p: Project) => {
+      const r = new CircuitRunner(p, 'adder4');
+      return [
+        [3, 5, 0],
+        [15, 1, 1],
+        [9, 9, 0],
+      ].map(([a, b, c]) => {
+        r.setMany({ A: a, B: b, Cin: c });
+        return [r.num('S'), r.num('Cout')];
+      });
+    };
+    const reference = sums(project);
+    store.openCircuit('half-adder');
+    // A new input above the others shifts both existing ports of every half-adder symbol.
+    store.editViewed((c, ctx) => addComponents(c, [createComponent(c, 'input', -6, -10, 0, { label: 'EXTRA' })], ctx));
+    const edited = store.getState().project;
+    expect(store.getState().notice).toBeNull();
+    expect(sums(edited)).toEqual(reference);
+    expect(new CircuitRunner(edited, 'full-adder').design.diagnostics.filter((d) => d.severity !== 'info')).toEqual([]);
+    store.undo();
+    expect(store.getState().project).toBe(project);
   });
 
   it('ignores edits that change nothing', () => {

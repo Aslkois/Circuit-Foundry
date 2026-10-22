@@ -1,6 +1,9 @@
 import {
   findCircuit,
+  instanceParamValues,
   projectContext,
+  specialize,
+  syncInstances,
   replaceCircuit,
   strOf,
   type Circuit,
@@ -120,6 +123,15 @@ export class EditorStore {
     return resolvePath(this.state.project, this.state.rootCircuitId, this.state.path).circuit;
   }
 
+  /**
+   * The circuit on screen as this instance sees it: bindings evaluated with
+   * the parameter values of the instances along the path. Same ids and
+   * geometry as `viewedCircuit`; edits always go to the definition.
+   */
+  get displayedCircuit(): Circuit {
+    return resolvePath(this.state.project, this.state.rootCircuitId, this.state.path).view;
+  }
+
   /** True when looking inside a subcircuit instance rather than at the simulation root. */
   get insideInstance(): boolean {
     return this.state.path.length > 0;
@@ -129,16 +141,27 @@ export class EditorStore {
   /* Project changes                                                      */
   /* -------------------------------------------------------------------- */
 
-  /** Replace the project, recording an undo step. */
+  /**
+   * Replace the project, recording an undo step. Wiring around instances of
+   * any circuit whose interface changed is re-routed in the same step.
+   */
   commit(project: Project, selection: Selection = this.state.selection): void {
     if (project === this.state.project) {
       if (selection !== this.state.selection) this.set({ selection });
       return;
     }
+    const synced = syncInstances(this.state.project, project);
     this.undoStack.push(this.snapshot());
     if (this.undoStack.length > MAX_HISTORY) this.undoStack.shift();
     this.redoStack = [];
-    this.applyProject(project, { selection });
+    this.applyProject(synced.project, { selection });
+    if (synced.disconnected.length > 0) {
+      const names = [...new Set(synced.disconnected.map((d) => `${findCircuit(synced.project, d.circuitId)?.name ?? d.circuitId}: ${d.port}`))];
+      const removed = synced.disconnected.every((d) => d.reason === 'removed');
+      this.notify(
+        `${synced.disconnected.length} instance connection${synced.disconnected.length === 1 ? '' : 's'} ${removed ? 'went to ports that no longer exist' : 'could not be re-routed cleanly'} and ${synced.disconnected.length === 1 ? 'was' : 'were'} left unconnected (${names.slice(0, 4).join(', ')}${names.length > 4 ? ', …' : ''}).`,
+      );
+    }
   }
 
   /** Apply an edit to the circuit on screen. */
@@ -257,19 +280,25 @@ export class EditorStore {
   }
 }
 
-/** Follow an instance path; stops at the first id that is not a valid subcircuit instance. */
-export function resolvePath(project: Project, rootId: string, path: readonly string[]): { circuit: Circuit; path: readonly string[] } {
+/**
+ * Follow an instance path; stops at the first id that is not a valid
+ * subcircuit instance. `circuit` is the definition at the end of the path,
+ * `view` the same circuit specialized for the parameters of that instance.
+ */
+export function resolvePath(project: Project, rootId: string, path: readonly string[]): { circuit: Circuit; view: Circuit; path: readonly string[] } {
   let circuit = findCircuit(project, rootId) ?? findCircuit(project, project.mainCircuitId) ?? project.circuits[0];
+  let view = specialize(circuit);
   const valid: string[] = [];
   for (const id of path) {
-    const comp = circuit.components.find((c) => c.id === id);
+    const comp = view.components.find((c) => c.id === id);
     if (!comp || comp.type !== 'subcircuit') break;
     const next = findCircuit(project, strOf(comp.props, 'circuit'));
     if (!next) break;
     circuit = next;
+    view = specialize(next, instanceParamValues(next, comp.props).values);
     valid.push(id);
   }
-  return { circuit, path: valid.length === path.length ? path : valid };
+  return { circuit, view, path: valid.length === path.length ? path : valid };
 }
 
 function pruneSelection(selection: Selection, circuit: Circuit): Selection {

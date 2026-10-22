@@ -31,7 +31,17 @@ export interface ComponentInstance {
   readonly x: number;
   readonly y: number;
   readonly rotation: Rotation;
+  /**
+   * Property values. On subcircuit instances, keys starting with "@" set the
+   * instance's parameters ("@N": 16).
+   */
   readonly props: Props;
+  /**
+   * Property bindings: prop name → expression over the enclosing circuit's
+   * parameters ("N", "N*2-1"). The stored prop holds the value for the
+   * default parameters; each instance of the circuit evaluates its own.
+   */
+  readonly bind?: Readonly<Record<string, string>>;
 }
 
 /** A straight horizontal or vertical wire segment between two grid points. */
@@ -43,12 +53,51 @@ export interface Wire {
   readonly y2: number;
 }
 
+export type PortSide = 'left' | 'right' | 'top' | 'bottom';
+
+export const PORT_SIDES: readonly PortSide[] = ['left', 'right', 'top', 'bottom'];
+
+/** Where one port (an Input or Output pin of the circuit) sits on the component symbol. */
+export interface PortPlacement {
+  readonly side: PortSide;
+  /** Slot along the side, 0 = top (or leftmost). Gaps are allowed. */
+  readonly slot: number;
+  /** Mark the port as a clock input (drawn with a triangle). */
+  readonly clock?: boolean;
+}
+
+/** How a circuit looks when placed as a component. Everything is optional. */
+export interface CircuitSymbol {
+  /** Body width in grid units (even, 4–40). Default: wide enough for its ports. */
+  readonly width?: number;
+  /** Large text drawn inside the body, e.g. "ALU". */
+  readonly label?: string;
+  /** Port placement by port id. Unlisted ports: inputs left, outputs right, in schematic order. */
+  readonly ports?: Readonly<Record<string, PortPlacement>>;
+}
+
+/** An integer parameter of a circuit, usable in property bindings ("width = N"). */
+export interface ParamDef {
+  /** Identifier: a letter or _ followed by letters, digits or _. */
+  readonly name: string;
+  readonly default: number;
+  readonly min: number;
+  readonly max: number;
+  readonly description?: string;
+}
+
+export const PARAM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export interface Circuit {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
   readonly components: readonly ComponentInstance[];
   readonly wires: readonly Wire[];
+  /** Appearance as a component. */
+  readonly symbol?: CircuitSymbol;
+  /** Parameters set per instance. */
+  readonly params?: readonly ParamDef[];
 }
 
 export interface Project {

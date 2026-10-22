@@ -14,7 +14,8 @@ export type DiagnosticCode =
   | 'feedback-loop'
   | 'oscillation'
   | 'contention'
-  | 'netlist';
+  | 'netlist'
+  | 'binding';
 
 export interface Diagnostic {
   readonly severity: Severity;

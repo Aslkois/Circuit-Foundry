@@ -445,10 +445,16 @@ function subcircuit(): Draw {
   return (p, rc, o) => {
     const ctx = p.ctx;
     const b = rc.localBounds;
-    p.local(rc.comp.x, rc.comp.y, rc.comp.rotation);
-    for (const pin of rc.pins) {
+    const pins = rc.pins.map((pin) => {
       const l = unrotateLocal(rc, pin.x, pin.y);
-      stub(p, rc, o, pin.name, l.x, l.y, l.x < 0 ? b.x : b.x + b.w, l.y);
+      const side = l.x < b.x ? 'left' : l.x > b.x + b.w ? 'right' : l.y < b.y ? 'top' : 'bottom';
+      return { pin, l, side };
+    });
+    p.local(rc.comp.x, rc.comp.y, rc.comp.rotation);
+    for (const { pin, l, side } of pins) {
+      const ex = side === 'left' ? b.x : side === 'right' ? b.x + b.w : l.x;
+      const ey = side === 'top' ? b.y : side === 'bottom' ? b.y + b.h : l.y;
+      stub(p, rc, o, pin.name, l.x, l.y, ex, ey);
     }
     body(p, o, () => roundRect(p, b.x, b.y, b.w, b.h, 0.35), '#1e2430');
     ctx.beginPath();
@@ -456,16 +462,74 @@ function subcircuit(): Draw {
     ctx.strokeStyle = o.ghost ? COLORS.ghost : '#3a4352';
     ctx.lineWidth = 1 * p.px;
     ctx.stroke();
-    ctx.restore();
-    for (const pin of rc.pins) {
-      const l = unrotateLocal(rc, pin.x, pin.y);
-      const left = l.x < 0;
-      p.localText(pin.label ?? pin.name, rc.comp.x, rc.comp.y, rc.comp.rotation, left ? b.x + 0.4 : b.x + b.w - 0.4, l.y, {
-        size: 0.62,
-        color: COLORS.textDim,
-        align: left ? 'left' : 'right',
-      });
+    // Clock markers: a small triangle pointing into the body.
+    ctx.strokeStyle = stroke(o);
+    ctx.lineWidth = 1.3 * p.px;
+    for (const { pin, l, side } of pins) {
+      if (!pin.clock) continue;
+      ctx.beginPath();
+      if (side === 'left' || side === 'right') {
+        const x = side === 'left' ? b.x : b.x + b.w;
+        const d = side === 'left' ? 0.5 : -0.5;
+        ctx.moveTo(x, l.y - 0.4);
+        ctx.lineTo(x + d, l.y);
+        ctx.lineTo(x, l.y + 0.4);
+      } else {
+        const y = side === 'top' ? b.y : b.y + b.h;
+        const d = side === 'top' ? 0.5 : -0.5;
+        ctx.moveTo(l.x - 0.4, y);
+        ctx.lineTo(l.x, y + d);
+        ctx.lineTo(l.x + 0.4, y);
+      }
+      ctx.stroke();
     }
+    ctx.restore();
+    for (const { pin, l, side } of pins) {
+      const text = pin.label ?? pin.name;
+      const inset = pin.clock ? 0.75 : 0.4;
+      if (side === 'left' || side === 'right') {
+        const left = side === 'left';
+        p.localText(text, rc.comp.x, rc.comp.y, rc.comp.rotation, left ? b.x + inset : b.x + b.w - inset, l.y, {
+          size: 0.62,
+          color: COLORS.textDim,
+          align: left ? 'left' : 'right',
+        });
+      } else {
+        const top = side === 'top';
+        p.localText(text, rc.comp.x, rc.comp.y, rc.comp.rotation, l.x, top ? b.y + inset + 0.15 : b.y + b.h - inset - 0.15, { size: 0.55, color: COLORS.textDim });
+      }
+    }
+    if (rc.bodyText) {
+      const c = rotatePoint(b.x + b.w / 2, b.y + b.h / 2, rc.comp.rotation);
+      p.text(rc.bodyText, rc.comp.x + c.x, rc.comp.y + c.y, { size: 0.75, color: o.ghost ? COLORS.ghost : COLORS.text, bold: true });
+    }
+  };
+}
+
+function tunnel(): Draw {
+  return (p, rc, o) => {
+    const ctx = p.ctx;
+    const b = rc.localBounds;
+    p.local(rc.comp.x, rc.comp.y, rc.comp.rotation);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-0.7, b.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.lineTo(b.x, b.y + b.h);
+    ctx.lineTo(-0.7, b.y + b.h);
+    ctx.closePath();
+    ctx.fillStyle = o.ghost ? 'rgba(28, 32, 40, 0.6)' : COLORS.body;
+    ctx.fill();
+    ctx.strokeStyle = o.selected || o.problem || !o.signals ? stroke(o) : pinColor(o, 'io');
+    ctx.lineWidth = (o.selected ? 2.2 : pinWidthPx(rc, o, 'io') > BIT_PX ? 2 : 1.5) * p.px;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.restore();
+    p.localText(strOf(rc.props, 'label'), rc.comp.x, rc.comp.y, rc.comp.rotation, (b.x - 0.6) / 2, 0, {
+      size: 0.6,
+      mono: true,
+      color: o.ghost ? COLORS.ghost : COLORS.text,
+    });
   };
 }
 
@@ -514,6 +578,7 @@ const DRAW: Record<string, Draw> = {
   led: led(),
   probe: probe(),
   splitter: splitter(),
+  tunnel: tunnel(),
   dff,
   register: registerBox,
   ram: memoryBox('RAM'),
@@ -533,7 +598,7 @@ export function drawComponent(p: Painter, rc: ResolvedComponent, o: SymbolOption
 function drawLabel(p: Painter, rc: ResolvedComponent, o: SymbolOptions): void {
   const type = rc.comp.type;
   const label = strOf(rc.props, 'label');
-  if (!label || type === 'text' || type === 'subcircuit') return;
+  if (!label || type === 'text' || type === 'subcircuit' || type === 'tunnel') return;
   const b = rc.bounds;
   const color = o.ghost ? COLORS.ghost : COLORS.label;
   if (type === 'input' || type === 'constant' || type === 'clock' || type === 'button') {

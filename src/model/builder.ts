@@ -1,7 +1,9 @@
 import { defaultProps, getDef, type LayoutContext } from './catalog/index.ts';
 import { withNormalizedWires } from './edit.ts';
-import { circuitInterface, resolveComponent } from './layout.ts';
-import type { Circuit, ComponentInstance, Point, Project, Props, Rotation, Wire } from './types.ts';
+import { lookupContext, resolveComponent } from './layout.ts';
+import { evalExpr } from './expr.ts';
+import { PARAM_PREFIX, specialize } from './params.ts';
+import type { Circuit, CircuitSymbol, ComponentInstance, ParamDef, Point, Project, Props, Rotation, Wire } from './types.ts';
 
 /*
  * Programmatic construction of projects (samples, tests, scripts).
@@ -10,7 +12,7 @@ import type { Circuit, ComponentInstance, Point, Project, Props, Rotation, Wire 
  */
 
 export class ComponentHandle {
-  readonly comp: ComponentInstance;
+  comp: ComponentInstance;
   private readonly ctx: LayoutContext;
 
   constructor(comp: ComponentInstance, ctx: LayoutContext) {
@@ -44,6 +46,8 @@ export class CircuitBuilder {
   private readonly components: ComponentInstance[] = [];
   private readonly wires: Wire[] = [];
   private readonly ctx: LayoutContext;
+  private symbolDef: CircuitSymbol | undefined;
+  private paramDefs: ParamDef[] = [];
   private nextComp = 1;
   private nextWire = 1;
 
@@ -62,9 +66,34 @@ export class CircuitBuilder {
     return new ComponentHandle(comp, this.ctx);
   }
 
-  /** Instance of another circuit already added to the project. */
-  sub(circuitId: string, x: number, y: number, label = '', rotation: Rotation = 0): ComponentHandle {
-    return this.add('subcircuit', x, y, { circuit: circuitId, label }, rotation);
+  /** Instance of another circuit already added to the project, with optional parameter values. */
+  sub(circuitId: string, x: number, y: number, label = '', rotation: Rotation = 0, params: Record<string, number> = {}): ComponentHandle {
+    const props: Record<string, string | number> = { circuit: circuitId, label };
+    for (const [k, v] of Object.entries(params)) props[PARAM_PREFIX + k] = v;
+    return this.add('subcircuit', x, y, props, rotation);
+  }
+
+  /** Declare a parameter of this circuit. */
+  param(name: string, def: number, min: number, max: number, description?: string): this {
+    this.paramDefs.push({ name, default: def, min, max, ...(description ? { description } : {}) });
+    return this;
+  }
+
+  /** Bind a property of a component to an expression over this circuit's parameters (declare them first). */
+  bind(handle: ComponentHandle, prop: string, expr: string): this {
+    const i = this.components.indexOf(handle.comp);
+    if (i < 0) throw new Error(`component ${handle.id} is not in ${this.id}`);
+    const scope = Object.fromEntries(this.paramDefs.map((p) => [p.name, p.default]));
+    const comp: ComponentInstance = { ...handle.comp, props: { ...handle.comp.props, [prop]: evalExpr(expr, scope) }, bind: { ...handle.comp.bind, [prop]: expr } };
+    this.components[i] = comp;
+    handle.comp = comp;
+    return this;
+  }
+
+  /** Set the symbol shape (port sides and slots, body width, label). */
+  symbol(symbol: CircuitSymbol): this {
+    this.symbolDef = symbol;
+    return this;
   }
 
   /** Orthogonal polyline through the given points. */
@@ -103,8 +132,11 @@ export class CircuitBuilder {
       ...(this.description ? { description: this.description } : {}),
       components: [...this.components],
       wires: [...this.wires],
+      ...(this.symbolDef ? { symbol: this.symbolDef } : {}),
+      ...(this.paramDefs.length ? { params: [...this.paramDefs] } : {}),
     };
-    return withNormalizedWires(circuit, this.ctx);
+    // Stored props hold the values for the default parameters, so the definition displays as its default instance.
+    return withNormalizedWires(specialize(circuit), this.ctx);
   }
 }
 
@@ -112,12 +144,7 @@ export class ProjectBuilder {
   private readonly circuits: Circuit[] = [];
   private readonly id: string;
   private readonly name: string;
-  readonly ctx: LayoutContext = {
-    getInterface: (id: string) => {
-      const c = this.circuits.find((x) => x.id === id);
-      return c ? circuitInterface(c) : undefined;
-    },
-  };
+  readonly ctx: LayoutContext = lookupContext((id) => this.circuits.find((x) => x.id === id));
 
   constructor(id: string, name: string) {
     this.id = id;

@@ -17,3 +17,8 @@ export * from './diagnostics.ts';
 export * from './format.ts';
 export * from './builder.ts';
 export * from './runner.ts';
+export * from './expr.ts';
+export * from './params.ts';
+export * from './sync.ts';
+export { findRoute } from './route.ts';
+export * from './extract.ts';

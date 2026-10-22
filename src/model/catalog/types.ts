@@ -1,7 +1,7 @@
 import type { PinDirection } from '../../engine/primitives/types.ts';
 import type { PrimitiveProps } from '../../engine/netlist.ts';
 import type { Rect } from '../geometry.ts';
-import type { PropValue, Props } from '../types.ts';
+import type { ComponentInstance, ParamDef, PortSide, PropValue, Props } from '../types.ts';
 
 export type Category = 'Gates' | 'Inputs & Outputs' | 'Wiring' | 'Memory' | 'Circuits' | 'Annotation';
 
@@ -41,12 +41,16 @@ export interface PinLayout {
   readonly y: number;
   /** Optional text drawn next to the pin. */
   readonly label?: string;
+  /** Drawn with a clock marker. */
+  readonly clock?: boolean;
 }
 
 export interface ComponentLayout {
   readonly pins: readonly PinLayout[];
   /** Body bounds in local, unrotated coordinates. */
   readonly bounds: Rect;
+  /** Text drawn in the middle of the body (custom symbol label). */
+  readonly bodyText?: string;
 }
 
 export interface PortDef {
@@ -54,18 +58,34 @@ export interface PortDef {
   readonly id: string;
   readonly label: string;
   readonly width: number;
+  readonly dir: 'in' | 'out';
+  readonly side: PortSide;
+  /** Slot along the side (0 = top or leftmost). */
+  readonly slot: number;
+  readonly clock: boolean;
 }
 
-/** The externally visible pins of a circuit used as a subcircuit. */
+/** The externally visible pins of a circuit used as a subcircuit, and how its symbol looks. */
 export interface CircuitInterface {
   readonly circuitId: string;
   readonly name: string;
+  /** Input ports in symbol order. */
   readonly inputs: readonly PortDef[];
+  /** Output ports in symbol order. */
   readonly outputs: readonly PortDef[];
+  /** Body width of the symbol (even). */
+  readonly symbolWidth: number;
+  /** Text drawn inside the body. */
+  readonly symbolLabel: string;
+  readonly params: readonly ParamDef[];
 }
 
 export interface LayoutContext {
-  getInterface(circuitId: string): CircuitInterface | undefined;
+  /**
+   * Interface of a circuit in the project. `instanceProps` are the props of
+   * the instance asking, whose "@name" entries select parameter values.
+   */
+  getInterface(circuitId: string, instanceProps?: Props): CircuitInterface | undefined;
 }
 
 /** How a document component participates in simulation. */
@@ -94,8 +114,8 @@ export interface ComponentTypeDef {
   readonly primitiveNote?: string;
   /** Hidden from the palette (e.g. subcircuit, which is placed from the circuit list). */
   readonly hiddenInPalette?: boolean;
-  /** Layout for normalized props. */
-  layout(props: Props, ctx: LayoutContext): ComponentLayout;
+  /** Layout for normalized props (`instance` gives access to the raw props, e.g. subcircuit parameters). */
+  layout(props: Props, ctx: LayoutContext, instance?: ComponentInstance): ComponentLayout;
 }
 
 export function intOf(props: Props, name: string): number {

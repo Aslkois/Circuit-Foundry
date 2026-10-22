@@ -9,8 +9,8 @@ import { WIRING_DEFS } from './wiring.ts';
 export * from './types.ts';
 export { gateHalfHeight, gateInputOffsets } from './gates.ts';
 export { bitBoxSize, constantBoxWidth, LED_COLORS } from './io.ts';
-export { describeBits, splitterArmBits, splitterMapping, defaultSplitterMapping, parseSplitterMapping, textScale } from './wiring.ts';
-export { subcircuitLayout, SUBCIRCUIT_HALF_WIDTH } from './subcircuit.ts';
+export { describeBits, splitterArmBits, splitterMapping, defaultSplitterMapping, parseSplitterMapping, textScale, tunnelLength } from './wiring.ts';
+export { subcircuitLayout, symbolSize, DEFAULT_SYMBOL_WIDTH } from './subcircuit.ts';
 
 const ALL_DEFS: ComponentTypeDef[] = [...GATE_DEFS, ...IO_DEFS, ...WIRING_DEFS, ...MEMORY_DEFS, SUBCIRCUIT_DEF];
 
