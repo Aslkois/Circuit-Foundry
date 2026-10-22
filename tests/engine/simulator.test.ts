@@ -389,6 +389,21 @@ describe('state snapshots', () => {
     expect(sim2.getInput('S')?.a).toBe(0);
   });
 
+  it('drives outputs of components that are not in the snapshot (added since it was taken)', () => {
+    // Snapshot from an empty design, imported into one with an input and a gate.
+    const empty = new Simulator({ nets: [], components: [] });
+    const snap = empty.exportState();
+    const t = new Bench();
+    const a = t.input('A');
+    t.name('A', a);
+    t.name('Y', t.unary('not', a));
+    const sim = new Simulator(t.nb.build());
+    sim.importState(snap);
+    expect(sim.settle().stable).toBe(true);
+    expect(formatBinary(sim.getNet(0))).toBe('0');
+    expect(formatBinary(sim.getNet(1))).toBe('1');
+  });
+
   it('ignores snapshot entries that no longer match the netlist', () => {
     const t = new Bench();
     const a = t.input('A', 4);

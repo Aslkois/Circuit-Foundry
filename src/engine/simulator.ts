@@ -699,6 +699,9 @@ export class Simulator {
    */
   importState(snapshot: SimSnapshot): void {
     this.queue.clear();
+    // Pending events are discarded, so projected driver values fall back to the actual ones.
+    this.projA.set(this.drvA);
+    this.projB.set(this.drvB);
     this.time = Number.isFinite(snapshot.time) ? snapshot.time : 0;
     this.tickCount = Number.isFinite(snapshot.tick) ? snapshot.tick : 0;
     for (const c of this.comps) {

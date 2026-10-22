@@ -140,6 +140,12 @@ export function rotateComponents(circuit: Circuit, ids: ReadonlySet<string>, clo
   return withNormalizedWires({ ...circuit, components }, ctx);
 }
 
+export function setRotation(circuit: Circuit, ids: ReadonlySet<string>, rotation: Rotation, ctx: LayoutContext): Circuit {
+  if (ids.size === 0) return circuit;
+  const components = circuit.components.map((c) => (ids.has(c.id) && c.rotation !== rotation ? { ...c, rotation } : c));
+  return withNormalizedWires({ ...circuit, components }, ctx);
+}
+
 export function setComponentProps(circuit: Circuit, id: string, changes: Readonly<Record<string, PropValue>>, ctx: LayoutContext): Circuit {
   const components = circuit.components.map((c) => (c.id === id ? { ...c, props: { ...c.props, ...changes } } : c));
   return withNormalizedWires({ ...circuit, components }, ctx);
