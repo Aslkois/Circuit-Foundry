@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { formatBinary, formatDecimal, formatHex, parseValue, type LogicValue } from '../../engine/logic.ts';
 import {
   analyzeConnectivity,
@@ -41,8 +41,8 @@ function PropField({ def, comp, onError }: { def: PropDef; comp: ComponentInstan
   const { store } = useServices();
   const typeDef = getDef(comp.type)!;
   const current = normalizeProps(typeDef, comp.props).props[def.name];
+  // The parent keys this component by the current value, so local text resets when the value changes.
   const [text, setText] = useState(String(current));
-  useEffect(() => setText(String(current)), [current]);
 
   const commit = (value: PropValue) => {
     if (value === current) return;
@@ -212,7 +212,6 @@ function ComponentInspector({ comp }: { comp: ComponentInstance }): ReactElement
   const path = useEditor((s) => s.path);
   const [error, setError] = useState<string | null>(null);
   const def = getDef(comp.type);
-  useEffect(() => setError(null), [comp.id]);
 
   if (!def) {
     return (
@@ -247,7 +246,7 @@ function ComponentInspector({ comp }: { comp: ComponentInstance }): ReactElement
         {def.props
           .filter((p) => !p.hidden)
           .map((p) => (
-            <PropField key={p.name} def={p} comp={comp} onError={setError} />
+            <PropField key={`${p.name}=${String(normalizeProps(def, comp.props).props[p.name])}`} def={p} comp={comp} onError={setError} />
           ))}
         {comp.type !== 'text' && (
           <div className="field">
@@ -308,6 +307,16 @@ function WireInspector({ wireIds }: { wireIds: string[] }): ReactElement {
   );
 }
 
+function DescriptionField({ value, onCommit }: { value: string; onCommit: (v: string) => void }): ReactElement {
+  const [desc, setDesc] = useState(value);
+  return (
+    <div className="field">
+      <label htmlFor="circuit-desc">Description</label>
+      <textarea id="circuit-desc" rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} onBlur={() => desc !== value && onCommit(desc)} />
+    </div>
+  );
+}
+
 function CircuitInspector(): ReactElement {
   const { store } = useServices();
   const project = useEditor((s) => s.project);
@@ -315,8 +324,6 @@ function CircuitInspector(): ReactElement {
   const circuit = store.viewedCircuit;
   const iface = circuitInterface(circuit);
   const users = usersOf(project, circuit.id);
-  const [desc, setDesc] = useState(circuit.description ?? '');
-  useEffect(() => setDesc(circuit.description ?? ''), [circuit.id, circuit.description]);
   const update = (patch: { name?: string; description?: string }) => {
     store.commit({ ...project, circuits: project.circuits.map((c) => (c.id === circuit.id ? { ...c, ...patch } : c)) });
   };
@@ -326,10 +333,7 @@ function CircuitInspector(): ReactElement {
       <p className="muted small">
         Circuit · {circuit.components.length} components · {circuit.wires.length} wire segments
       </p>
-      <div className="field">
-        <label htmlFor="circuit-desc">Description</label>
-        <textarea id="circuit-desc" rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} onBlur={() => desc !== (circuit.description ?? '') && update({ description: desc })} />
-      </div>
+      <DescriptionField key={`${circuit.id}:${circuit.description ?? ''}`} value={circuit.description ?? ''} onCommit={(description) => update({ description })} />
       <h3>Interface</h3>
       {iface.inputs.length + iface.outputs.length === 0 ? (
         <p className="muted small">No Input or Output pins. Add labelled pins to use this circuit as a component in other circuits.</p>

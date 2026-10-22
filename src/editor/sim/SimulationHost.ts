@@ -38,6 +38,8 @@ export const TICK_RATES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 1024, 4096, 16384] 
 
 const STATUS_INTERVAL_MS = 120;
 const FRAME_BUDGET_MS = 10;
+/** Events processed per settle call before yielding to the browser. */
+const SETTLE_CHUNK_EVENTS = 1_000_000;
 
 /**
  * Owns the compiled design and the engine instance for the editor.
@@ -60,6 +62,7 @@ export class SimulationHost {
   private compileCount = 0;
 
   private rafId = 0;
+  private continuation: ReturnType<typeof setTimeout> | null = null;
   private lastFrame = 0;
   private tickAccumulator = 0;
   private lastStatusEmit = 0;
@@ -153,9 +156,22 @@ export class SimulationHost {
   /* Controls                                                             */
   /* -------------------------------------------------------------------- */
 
-  /** Settle now (or report oscillation). */
+  /**
+   * Settle, yielding to the browser between chunks of work so a very large or
+   * glitch-heavy design keeps the editor responsive ("Propagating…").
+   */
   settle(): void {
-    const r = this.sim.settle();
+    const r = this.sim.settle({ maxEvents: SETTLE_CHUNK_EVENTS });
+    if (r.incomplete) {
+      this.refreshState(true);
+      if (!this.continuation) {
+        this.continuation = setTimeout(() => {
+          this.continuation = null;
+          if (this.status.autoPropagate && !this.sim.isSettled) this.settle();
+        }, 0);
+      }
+      return;
+    }
     this.afterSettle(r.stable, r.oscillation ?? null);
   }
 
@@ -250,9 +266,16 @@ export class SimulationHost {
     const due = Math.floor(this.tickAccumulator);
     this.tickAccumulator -= due;
     const deadline = performance.now() + FRAME_BUDGET_MS;
+    if (!this.sim.isSettled) {
+      // Still propagating the previous tick: no new edges until it settles.
+      this.settle();
+      this.rafId = requestAnimationFrame(this.frame);
+      return;
+    }
     for (let i = 0; i < due; i++) {
       this.sim.tick();
-      const r = this.sim.settle();
+      const r = this.sim.settle({ maxEvents: SETTLE_CHUNK_EVENTS });
+      if (r.incomplete) break;
       this.rateWindowTicks++;
       if (!r.stable) {
         this.afterSettle(false, r.oscillation ?? null);
@@ -420,6 +443,7 @@ export class SimulationHost {
 
   dispose(): void {
     this.stopLoop();
+    if (this.continuation) clearTimeout(this.continuation);
     this.listeners.clear();
   }
 }

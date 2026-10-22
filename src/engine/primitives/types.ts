@@ -43,9 +43,21 @@ export type PrimitiveKind =
   /** Clock source advanced by Simulator.tick. */
   | 'clock';
 
+/**
+ * Optional declarative description of a stateless gate. When present the
+ * simulator evaluates the component inline from flat arrays instead of
+ * calling its Behavior (same results; much better memory locality for large
+ * designs). The Behavior must implement exactly the same function.
+ */
+export interface GateKernel {
+  readonly op: 'and' | 'or' | 'xor' | 'buffer';
+  readonly negate: boolean;
+}
+
 export interface PrimitiveSpec {
   readonly type: string;
   readonly kind: PrimitiveKind;
+  readonly kernel?: GateKernel;
   /**
    * True when outputs depend only on stored state, i.e. there is no
    * combinational path from inputs to outputs. Used by feedback analysis.

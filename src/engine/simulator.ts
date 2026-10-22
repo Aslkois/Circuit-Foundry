@@ -3,7 +3,7 @@ import { NetlistError, type Netlist, type NetlistComponent } from './netlist.ts'
 import { defaultLibrary } from './primitives/index.ts';
 import { InputBehavior } from './primitives/sources.ts';
 import type { Behavior, EvalContext, PinSpec, PrimitiveLibrary, PrimitiveSpec } from './primitives/types.ts';
-import { EventQueue } from './scheduler.ts';
+import { EventQueue, type Bucket } from './scheduler.ts';
 
 /*
  * Event-driven, four-state, discrete-time logic simulator.
@@ -31,9 +31,22 @@ export interface SimulatorOptions {
   library?: PrimitiveLibrary;
   /** settle() reports oscillation after this many steps (default 100 000). */
   maxSettleSteps?: number;
-  /** ...or after applying this many events (default 5 000 000). */
+  /** ...or after processing this many events (default: unlimited). */
   maxSettleEvents?: number;
+  /**
+   * Evaluate built-in gates inline from flat arrays (default true). Turning
+   * this off routes every component through its Behavior object; results are
+   * identical, which the test suite checks.
+   */
+  fastKernels?: boolean;
 }
+
+const OP_NONE = 0;
+const OP_AND = 1;
+const OP_OR = 2;
+const OP_XOR = 3;
+const OP_BUFFER = 4;
+const KERNEL_OPS = { and: OP_AND, or: OP_OR, xor: OP_XOR, buffer: OP_BUFFER } as const;
 
 export interface OscillationReport {
   /** Components that kept being re-evaluated, by key (sorted). */
@@ -45,15 +58,27 @@ export interface OscillationReport {
 }
 
 export interface SettleResult {
+  /** No events remain. */
   stable: boolean;
   steps: number;
   events: number;
+  /** The circuit kept changing past the step limit: it oscillates (or is pathologically deep). */
   oscillation?: OscillationReport;
+  /** The per-call work budget ran out first; call settle() again to continue. */
+  incomplete?: boolean;
+}
+
+export interface SettleBudget {
+  /** Stop (with `incomplete`) after processing this many events in this call. */
+  maxEvents?: number;
 }
 
 export interface SimStats {
+  /** Time steps processed. */
   steps: number;
+  /** Scheduled driver updates processed. */
   events: number;
+  /** Component evaluations. */
   evaluations: number;
 }
 
@@ -90,9 +115,14 @@ class ComponentRuntime implements EvalContext, ComponentInfo {
   readonly delay: number;
   behavior: Behavior;
   private readonly sim: Simulator;
+  // Direct references to the simulator's value arrays (one hop fewer on every read).
+  private readonly netA: Int32Array;
+  private readonly netB: Int32Array;
 
   constructor(sim: Simulator, source: NetlistComponent, spec: PrimitiveSpec, pins: PinSpec[], pinNets: Int32Array, pinSlots: Int32Array) {
     this.sim = sim;
+    this.netA = sim.netA;
+    this.netB = sim.netB;
     this.source = source;
     this.key = source.key;
     this.type = source.type;
@@ -116,11 +146,11 @@ class ComponentRuntime implements EvalContext, ComponentInfo {
   }
 
   a(pin: number): number {
-    return this.sim.netA[this.pinNets[pin]];
+    return this.netA[this.pinNets[pin]];
   }
 
   b(pin: number): number {
-    return this.sim.netB[this.pinNets[pin]];
+    return this.netB[this.pinNets[pin]];
   }
 
   out(pin: number, a: number, b: number): void {
@@ -200,13 +230,26 @@ export class Simulator {
   private readonly dirtyComps: Int32Array;
   private dirtyCount = 0;
 
+  // Inline gate kernels (see GateKernel): per-component op, inputs and output.
+  private readonly kOp: Uint8Array;
+  private readonly kNeg: Uint8Array;
+  private readonly kIn: Uint8Array;
+  private readonly kPinStart: Int32Array;
+  private readonly kPins: Int32Array;
+  private readonly kOut: Int32Array;
+  private readonly kMask: Int32Array;
+  private readonly kDelay: Int32Array;
+
+  /** Consecutive steps since the queue was last empty or the last external stimulus (oscillation detection). */
+  private unsettledSteps = 0;
+
   private traceNets: Set<number> | null = null;
   private traceComps: Set<number> | null = null;
 
   constructor(netlist: Netlist, options: SimulatorOptions = {}) {
     this.library = options.library ?? defaultLibrary;
     this.maxSettleSteps = options.maxSettleSteps ?? 100_000;
-    this.maxSettleEvents = options.maxSettleEvents ?? 5_000_000;
+    this.maxSettleEvents = options.maxSettleEvents ?? Infinity;
 
     const errors: string[] = [];
     const fail = (msg: string) => {
@@ -427,6 +470,34 @@ export class Simulator {
     this.compDirty = new Uint8Array(this.comps.length);
     this.dirtyComps = new Int32Array(this.comps.length);
 
+    // ---- inline gate kernels ------------------------------------------------------
+    const nc = this.comps.length;
+    this.kOp = new Uint8Array(nc);
+    this.kNeg = new Uint8Array(nc);
+    this.kIn = new Uint8Array(nc);
+    this.kPinStart = new Int32Array(nc);
+    this.kOut = new Int32Array(nc);
+    this.kMask = new Int32Array(nc);
+    this.kDelay = new Int32Array(nc);
+    const kernelPins: number[] = [];
+    if (options.fastKernels ?? true) {
+      this.comps.forEach((c, ci) => {
+        const k = c.spec.kernel;
+        const last = c.pins.length - 1;
+        // Kernels need inputs first and a single output last.
+        if (!k || last < 1 || c.pins[last].dir !== 'out' || c.pins.slice(0, last).some((p) => p.dir !== 'in')) return;
+        this.kOp[ci] = KERNEL_OPS[k.op];
+        this.kNeg[ci] = k.negate ? 1 : 0;
+        this.kIn[ci] = last;
+        this.kPinStart[ci] = kernelPins.length;
+        for (let p = 0; p < last; p++) kernelPins.push(c.pinNets[p]);
+        this.kOut[ci] = c.pinSlots[last];
+        this.kMask[ci] = this.netMask[c.pinNets[last]];
+        this.kDelay[ci] = c.delay;
+      });
+    }
+    this.kPins = Int32Array.from(kernelPins);
+
     this.reset();
   }
 
@@ -467,6 +538,7 @@ export class Simulator {
    */
   reset(): void {
     this.queue.clear();
+    this.unsettledSteps = 0;
     this.time = 0;
     this.tickCount = 0;
     this.valueVersion++;
@@ -488,94 +560,186 @@ export class Simulator {
     const bucket = this.queue.pop();
     if (!bucket) return false;
     this.time = bucket.time;
+    this.stats.events += bucket.length;
+    // The phases are separate methods whose hot loops are followed only by a
+    // return: V8 optimizes long loops on-stack, and code after such a loop
+    // that has not run yet would otherwise force a deoptimization.
+    this.pendingNetCount = this.applyEvents(bucket, this.pendingNetCount);
+    this.queue.release(bucket);
+    this.resolvePending(this.pendingNetCount);
+    this.pendingNetCount = 0;
+    if (this.pendingThreadCount > 0) this.resolvePendingThreads();
+    const changed = this.changedNetCount;
+    if (changed > 0) {
+      this.valueVersion++;
+      if (this.traceNets) for (let i = 0; i < changed; i++) this.traceNets.add(this.changedNets[i]);
+      this.dirtyCount = this.markReaders(changed, this.dirtyCount);
+      this.changedNetCount = 0;
+    }
+    const count = this.dirtyCount;
+    this.dirtyCount = 0;
+    if (this.traceComps) for (let i = 0; i < count; i++) this.traceComps.add(this.dirtyComps[i]);
+    this.evaluateDirty(count);
+    this.stats.evaluations += count;
+    this.stats.steps++;
+    this.unsettledSteps = this.queue.isEmpty ? 0 : this.unsettledSteps + 1;
+    return true;
+  }
 
-    // 1. apply
-    const { drvA, drvB, slotNet, netThreadBase } = this;
-    for (let i = 0; i < bucket.length; i++) {
-      const s = bucket.slots[i];
-      const a = bucket.a[i];
-      const b = bucket.b[i];
+  /** Phase 1: update driver values; returns the new count of nets waiting to be resolved. */
+  private applyEvents(bucket: Bucket, pendingCount: number): number {
+    const { drvA, drvB, slotNet, netThreadBase, netPending, pendingNets } = this;
+    const slots = bucket.slots;
+    const as = bucket.a;
+    const bs = bucket.b;
+    const length = bucket.length;
+    for (let i = 0; i < length; i++) {
+      const s = slots[i];
+      const a = as[i];
+      const b = bs[i];
       const oa = drvA[s];
       const ob = drvB[s];
       if (oa === a && ob === b) continue;
       drvA[s] = a;
       drvB[s] = b;
-      this.stats.events++;
       const n = slotNet[s];
       const base = netThreadBase[n];
       if (base < 0) {
-        if (this.netPending[n] === 0) {
-          this.netPending[n] = 1;
-          this.pendingNets[this.pendingNetCount++] = n;
+        if (netPending[n] === 0) {
+          netPending[n] = 1;
+          pendingNets[pendingCount++] = n;
         }
       } else {
-        let diff = (oa ^ a) | (ob ^ b);
-        while (diff !== 0) {
-          const low = diff & -diff;
-          diff ^= low;
-          const t = this.bitThread[base + 31 - Math.clz32(low)];
-          if (this.threadPending[t] === 0) {
-            this.threadPending[t] = 1;
-            this.pendingThreads[this.pendingThreadCount++] = t;
-          }
-        }
+        this.markThreads(base, (oa ^ a) | (ob ^ b));
       }
     }
-    this.queue.release(bucket);
+    return pendingCount;
+  }
 
-    // 2. resolve
-    for (let i = 0; i < this.pendingNetCount; i++) {
-      const n = this.pendingNets[i];
-      this.netPending[n] = 0;
+  private markThreads(base: number, diff: number): void {
+    while (diff !== 0) {
+      const low = diff & -diff;
+      diff ^= low;
+      const t = this.bitThread[base + 31 - Math.clz32(low)];
+      if (this.threadPending[t] === 0) {
+        this.threadPending[t] = 1;
+        this.pendingThreads[this.pendingThreadCount++] = t;
+      }
+    }
+  }
+
+  /** Phase 2: recompute every affected word-level net from all of its drivers. */
+  private resolvePending(count: number): void {
+    const pendingNets = this.pendingNets;
+    const netPending = this.netPending;
+    for (let i = 0; i < count; i++) {
+      const n = pendingNets[i];
+      netPending[n] = 0;
       this.resolveNet(n);
     }
-    this.pendingNetCount = 0;
+  }
+
+  private resolvePendingThreads(): void {
     for (let i = 0; i < this.pendingThreadCount; i++) {
       const t = this.pendingThreads[i];
       this.threadPending[t] = 0;
       this.resolveThread(t);
     }
     this.pendingThreadCount = 0;
+  }
 
-    // 3. schedule readers of changed nets
-    if (this.changedNetCount > 0) this.valueVersion++;
-    for (let i = 0; i < this.changedNetCount; i++) {
-      const n = this.changedNets[i];
-      this.netChanged[n] = 0;
-      if (this.traceNets) this.traceNets.add(n);
-      for (let k = this.netRdrStart[n]; k < this.netRdrStart[n + 1]; k++) {
-        const c = this.netRdrComps[k];
-        if (this.compDirty[c] === 0) {
-          this.compDirty[c] = 1;
-          this.dirtyComps[this.dirtyCount++] = c;
+  /** Phase 3: mark components reading a changed net; returns the new dirty count. */
+  private markReaders(count: number, dirty: number): number {
+    const { changedNets, netChanged, netRdrStart, netRdrComps, compDirty, dirtyComps } = this;
+    for (let i = 0; i < count; i++) {
+      const n = changedNets[i];
+      netChanged[n] = 0;
+      const end = netRdrStart[n + 1];
+      for (let k = netRdrStart[n]; k < end; k++) {
+        const c = netRdrComps[k];
+        if (compDirty[c] === 0) {
+          compDirty[c] = 1;
+          dirtyComps[dirty++] = c;
         }
       }
     }
-    this.changedNetCount = 0;
-
-    // 4. evaluate
-    const count = this.dirtyCount;
-    this.dirtyCount = 0;
-    for (let i = 0; i < count; i++) {
-      const ci = this.dirtyComps[i];
-      this.compDirty[ci] = 0;
-      const c = this.comps[ci];
-      c.behavior.evaluate(c);
-      if (this.traceComps) this.traceComps.add(ci);
-    }
-    this.stats.evaluations += count;
-    this.stats.steps++;
-    return true;
+    return dirty;
   }
 
-  /** Run steps until no events remain, or report oscillation when the work limits are exceeded. */
-  settle(): SettleResult {
+  /** Phase 4: evaluate marked components against the now-fixed net values. */
+  private evaluateDirty(count: number): void {
+    const { dirtyComps, compDirty, comps, kOp, kNeg, kIn, kPinStart, kPins, kOut, kMask, kDelay, netA, netB } = this;
+    for (let i = 0; i < count; i++) {
+      const ci = dirtyComps[i];
+      compDirty[ci] = 0;
+      const op = kOp[ci];
+      if (op === OP_NONE) {
+        const c = comps[ci];
+        c.behavior.evaluate(c);
+        continue;
+      }
+      // Same semantics as the gate behaviours in primitives/gates.ts.
+      const n = kIn[ci];
+      const p = kPinStart[ci];
+      let a: number;
+      let b: number;
+      if (op === OP_AND) {
+        a = -1;
+        b = 0;
+        for (let j = 0; j < n; j++) {
+          const net = kPins[p + j];
+          const ib = netB[net];
+          a &= netA[net] | ib;
+          b = a & (b | ib);
+        }
+      } else if (op === OP_OR) {
+        a = 0;
+        b = 0;
+        for (let j = 0; j < n; j++) {
+          const net = kPins[p + j];
+          const ib = netB[net];
+          const ia = netA[net] | ib;
+          const one = (a & ~b) | (ia & ~ib);
+          a |= ia;
+          b = a & ~one;
+        }
+      } else if (op === OP_XOR) {
+        a = 0;
+        b = 0;
+        for (let j = 0; j < n; j++) {
+          const net = kPins[p + j];
+          const ib = netB[net];
+          b |= ib;
+          a = (a ^ (netA[net] | ib)) | b;
+        }
+      } else {
+        const net = kPins[p];
+        b = netB[net];
+        a = netA[net] | b;
+      }
+      if (kNeg[ci] !== 0) a = ~a | b;
+      const m = kMask[ci];
+      this.drive(kOut[ci], a & m, b & m, kDelay[ci]);
+    }
+  }
+
+  /**
+   * Run steps until no events remain. Reports oscillation when the circuit has
+   * been changing for more than `maxSettleSteps` consecutive time steps (counted
+   * across calls), or when this call processed more than `maxSettleEvents`.
+   * With a budget, stops early with `incomplete` so callers can stay responsive.
+   */
+  settle(budget?: SettleBudget): SettleResult {
     const startEvents = this.stats.events;
     let steps = 0;
     while (!this.queue.isEmpty) {
-      if (steps >= this.maxSettleSteps || this.stats.events - startEvents >= this.maxSettleEvents) {
+      const events = this.stats.events - startEvents;
+      if (this.unsettledSteps >= this.maxSettleSteps || events >= this.maxSettleEvents) {
         const oscillation = this.sampleOscillation();
         return { stable: false, steps, events: this.stats.events - startEvents, oscillation };
+      }
+      if (budget?.maxEvents !== undefined && events >= budget.maxEvents) {
+        return { stable: false, steps, events, incomplete: true };
       }
       this.step();
       steps++;
@@ -586,6 +750,7 @@ export class Simulator {
   /** Advance all clocks by one tick (half a period for a 1:1 clock). Does not settle. */
   tick(): void {
     this.tickCount++;
+    this.unsettledSteps = 0;
     for (const ci of this.clockComps) {
       const c = this.comps[ci];
       c.behavior.evaluate(c);
@@ -619,6 +784,7 @@ export class Simulator {
     if (v.width !== width) throw new Error(`Input "${key}" is ${width} bit(s); got a ${v.width}-bit value`);
     c.behavior.set(v.a, v.b);
     c.behavior.evaluate(c);
+    this.unsettledSteps = 0;
   }
 
   getInput(key: string): LogicValue | null {
@@ -699,6 +865,7 @@ export class Simulator {
    */
   importState(snapshot: SimSnapshot): void {
     this.queue.clear();
+    this.unsettledSteps = 0;
     // Pending events are discarded, so projected driver values fall back to the actual ones.
     this.projA.set(this.drvA);
     this.projB.set(this.drvB);

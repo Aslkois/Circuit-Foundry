@@ -42,12 +42,12 @@ describe('logic gates', () => {
     }
   });
 
-  it('implements NOT and buffer', () => {
+  it.each([true, false])('implements NOT and buffer (fast kernels: %s)', (fastKernels) => {
     const t = new Bench();
     const a = t.input('A');
     t.name('N', t.unary('not', a));
     t.name('B', t.unary('buffer', a));
-    t.start();
+    t.start({ fastKernels });
     t.set('A', 0);
     expect([t.bits('N'), t.bits('B')]).toEqual(['1', '0']);
     t.set('A', 1);
@@ -56,8 +56,8 @@ describe('logic gates', () => {
     expect([t.bits('N'), t.bits('B')]).toEqual(['x', 'x']);
   });
 
-  for (const [type, ref] of Object.entries(GATES)) {
-    it(`${type}: four-state behaviour for 2 and 3 inputs matches the reference model`, () => {
+  for (const [type, ref] of Object.entries(GATES)) for (const fastKernels of [true, false]) {
+    it(`${type}: four-state behaviour for 2 and 3 inputs matches the reference model (${fastKernels ? 'inline kernel' : 'behaviour object'})`, () => {
       for (const n of [2, 3]) {
         // Evaluate every combination in parallel, one combination per bit lane.
         const combos = allCombos(n);
@@ -67,7 +67,7 @@ describe('logic gates', () => {
           const t = new Bench();
           const ins = Array.from({ length: n }, (_, i) => t.input(`I${i}`, chunk.length));
           t.name('Y', t.gate(type, ins, { width: chunk.length }));
-          t.start();
+          t.start({ fastKernels });
           for (let i = 0; i < n; i++) t.set(`I${i}`, fromBits(chunk.map((c) => c[i])));
           const out = toBits(t.get('Y'));
           chunk.forEach((c, lane) => expect(out[lane], `${type}(${c.join(',')})`).toBe(ref(c)));

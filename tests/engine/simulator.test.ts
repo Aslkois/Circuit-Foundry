@@ -102,6 +102,44 @@ describe('propagation and timing', () => {
   });
 });
 
+describe('budgeted settling', () => {
+  it('can settle in chunks with the same result', () => {
+    const t = new Bench();
+    let n = t.input('A');
+    for (let i = 0; i < 50; i++) n = t.unary('not', n);
+    t.name('Y', n);
+    const sim = t.start();
+    sim.setInput('A', 1);
+    let chunks = 0;
+    let r = sim.settle({ maxEvents: 7 });
+    while (r.incomplete) {
+      chunks++;
+      r = sim.settle({ maxEvents: 7 });
+    }
+    expect(r.stable).toBe(true);
+    expect(chunks).toBeGreaterThan(3);
+    expect(t.bits('Y')).toBe('1');
+  });
+
+  it('detects oscillation across chunked calls', () => {
+    const t = new Bench();
+    const en = t.input('EN');
+    const loop = t.net(1);
+    t.gate('nand', [en, loop], { out: loop, key: 'osc' });
+    const sim = t.start({ maxSettleSteps: 300 });
+    sim.setInput('EN', 1);
+    let r = sim.settle({ maxEvents: 20 });
+    let calls = 1;
+    while (r.incomplete) {
+      r = sim.settle({ maxEvents: 20 });
+      calls++;
+    }
+    expect(r.stable).toBe(false);
+    expect(r.oscillation?.componentKeys).toEqual(['osc']);
+    expect(calls).toBeGreaterThan(5);
+  });
+});
+
 describe('multiple drivers and floating nets', () => {
   it('leaves undriven nets floating and drives gates with floating inputs to X', () => {
     const t = new Bench();

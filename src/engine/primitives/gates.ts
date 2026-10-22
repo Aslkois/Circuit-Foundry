@@ -25,56 +25,83 @@ export const MAX_GATE_INPUTS = 16;
 
 type GateOp = 'and' | 'or' | 'xor';
 
-class GateBehavior implements Behavior {
-  private readonly inputs: number;
-  private readonly op: GateOp;
+/* One class per operation keeps each evaluate() small and monomorphic. */
+
+class AndGate implements Behavior {
+  private readonly n: number;
   private readonly negate: boolean;
   private readonly mask: number;
 
-  constructor(inputs: number, op: GateOp, negate: boolean, width: number) {
-    this.inputs = inputs;
-    this.op = op;
+  constructor(n: number, negate: boolean, width: number) {
+    this.n = n;
     this.negate = negate;
     this.mask = widthMask(width);
   }
 
   evaluate(ctx: EvalContext): void {
-    const n = this.inputs;
-    let a: number;
-    let b: number;
-    if (this.op === 'and') {
-      a = -1;
-      b = 0;
-      for (let i = 0; i < n; i++) {
-        const ib = ctx.b(i);
-        const ia = ctx.a(i) | ib;
-        a = a & ia;
-        b = a & (b | ib);
-      }
-    } else if (this.op === 'or') {
-      a = 0;
-      b = 0;
-      for (let i = 0; i < n; i++) {
-        const ib = ctx.b(i);
-        const ia = ctx.a(i) | ib;
-        const one = (a & ~b) | (ia & ~ib);
-        a = a | ia;
-        b = a & ~one;
-      }
-    } else {
-      a = 0;
-      b = 0;
-      for (let i = 0; i < n; i++) {
-        const ib = ctx.b(i);
-        const ia = ctx.a(i) | ib;
-        b = b | ib;
-        a = (a ^ ia) | b;
-      }
+    let a = -1;
+    let b = 0;
+    for (let i = 0; i < this.n; i++) {
+      const ib = ctx.b(i);
+      a &= ctx.a(i) | ib;
+      b = a & (b | ib);
     }
     if (this.negate) a = ~a | b;
-    ctx.out(n, a & this.mask, b & this.mask);
+    ctx.out(this.n, a & this.mask, b & this.mask);
   }
 }
+
+class OrGate implements Behavior {
+  private readonly n: number;
+  private readonly negate: boolean;
+  private readonly mask: number;
+
+  constructor(n: number, negate: boolean, width: number) {
+    this.n = n;
+    this.negate = negate;
+    this.mask = widthMask(width);
+  }
+
+  evaluate(ctx: EvalContext): void {
+    let a = 0;
+    let b = 0;
+    for (let i = 0; i < this.n; i++) {
+      const ib = ctx.b(i);
+      const ia = ctx.a(i) | ib;
+      const one = (a & ~b) | (ia & ~ib);
+      a |= ia;
+      b = a & ~one;
+    }
+    if (this.negate) a = ~a | b;
+    ctx.out(this.n, a & this.mask, b & this.mask);
+  }
+}
+
+class XorGate implements Behavior {
+  private readonly n: number;
+  private readonly negate: boolean;
+  private readonly mask: number;
+
+  constructor(n: number, negate: boolean, width: number) {
+    this.n = n;
+    this.negate = negate;
+    this.mask = widthMask(width);
+  }
+
+  evaluate(ctx: EvalContext): void {
+    let a = 0;
+    let b = 0;
+    for (let i = 0; i < this.n; i++) {
+      const ib = ctx.b(i);
+      b |= ib;
+      a = (a ^ (ctx.a(i) | ib)) | b;
+    }
+    if (this.negate) a = ~a | b;
+    ctx.out(this.n, a & this.mask, b & this.mask);
+  }
+}
+
+const GATE_CLASSES = { and: AndGate, or: OrGate, xor: XorGate };
 
 function gatePins(props: PrimitiveProps): PinSpec[] {
   const n = intProp(props, 'inputs', 2);
@@ -89,12 +116,13 @@ function gateSpec(type: string, op: GateOp, negate: boolean): PrimitiveSpec {
   return {
     type,
     kind: 'logic',
+    kernel: { op, negate },
     sequential: false,
     delay: 1,
     validate: (props) =>
       firstError(checkInt(props, 'inputs', 2, MAX_GATE_INPUTS), checkInt(props, 'width', 1, MAX_WIDTH)),
     pins: gatePins,
-    create: (props) => new GateBehavior(intProp(props, 'inputs', 2), op, negate, intProp(props, 'width', 1)),
+    create: (props) => new GATE_CLASSES[op](intProp(props, 'inputs', 2), negate, intProp(props, 'width', 1)),
   };
 }
 
@@ -126,6 +154,7 @@ function unarySpec(type: string, invert: boolean): PrimitiveSpec {
   return {
     type,
     kind: 'logic',
+    kernel: { op: 'buffer', negate: invert },
     sequential: false,
     delay: 1,
     validate: (props) => checkInt(props, 'width', 1, MAX_WIDTH),
