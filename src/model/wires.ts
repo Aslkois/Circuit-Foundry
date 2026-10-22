@@ -68,10 +68,10 @@ export function normalizeWires(wires: readonly Wire[], pins: Iterable<Point>, ne
   });
 
   const pinPoints = [...pins];
-  const pinSet = new Set<string>();
+  const pinSet = new Set<number>();
   for (const p of pinPoints) pinSet.add(pointKey(p.x, p.y));
-  const hEnds = new Set<string>();
-  const vEnds = new Set<string>();
+  const hEnds = new Set<number>();
+  const vEnds = new Set<number>();
   for (const s of segs) {
     const set = s.horizontal ? hEnds : vEnds;
     set.add(s.horizontal ? pointKey(s.start, s.line) : pointKey(s.line, s.start));

@@ -82,7 +82,7 @@ export function moveItems(
   rubberBand = true,
 ): Circuit {
   if (dx === 0 && dy === 0) return circuit;
-  const moving = new Set<string>();
+  const moving = new Set<number>();
   for (const c of circuit.components) {
     if (!componentIds.has(c.id)) continue;
     for (const p of resolveComponent(c, ctx).pins) moving.add(pointKey(p.x, p.y));

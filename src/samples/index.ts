@@ -224,25 +224,27 @@ function defineDLatch(pb: ProjectBuilder): void {
     'D latch',
     (b) => {
       const d = b.add('input', 0, 0, { label: 'D' });
-      const en = b.add('input', 0, 8, { label: 'EN' });
-      const inv = b.add('not', 6, 6);
+      const en = b.add('input', 0, 11, { label: 'EN' });
+      const inv = b.add('not', 6, 9);
       const n1 = b.add('nand', 14, 1);
-      const n2 = b.add('nand', 14, 7);
+      const n2 = b.add('nand', 14, 10);
       const n3 = b.add('nand', 24, 2);
-      const n4 = b.add('nand', 24, 6);
+      const n4 = b.add('nand', 24, 9);
       const q = b.add('output', 32, 2, { label: 'Q' });
-      const qn = b.add('output', 32, 6, { label: 'Q̅' });
+      const qn = b.add('output', 32, 9, { label: 'Q̅' });
+      // Input stage: S' = NAND(D, EN), R' = NAND(NOT D, EN).
       b.wire(d.pin('out'), n1.pin('in0'));
-      b.wire({ x: 2, y: 0 }, { x: 2, y: 6 }, inv.pin('in'));
+      b.wire({ x: 2, y: 0 }, { x: 2, y: 9 }, inv.pin('in'));
       b.wire(inv.pin('out'), n2.pin('in0'));
       b.wire(en.pin('out'), n2.pin('in1'));
-      b.wire({ x: 9, y: 8 }, { x: 9, y: 2 }, n1.pin('in1'));
+      b.wire({ x: 9, y: 11 }, { x: 9, y: 2 }, n1.pin('in1'));
+      // Storage: cross-coupled NAND gates.
       b.wire(n1.pin('out'), n3.pin('in0'));
       b.wire(n2.pin('out'), n4.pin('in1'));
       b.wire(n3.pin('out'), q.pin('in'));
       b.wire(n4.pin('out'), qn.pin('in'));
-      b.wire({ x: 29, y: 2 }, { x: 29, y: 4 }, { x: 19, y: 4 }, { x: 19, y: 5 }, n4.pin('in0'));
-      b.wire({ x: 30, y: 6 }, { x: 30, y: 10 }, { x: 20, y: 10 }, { x: 20, y: 3 }, n3.pin('in1'));
+      b.wire({ x: 29, y: 2 }, { x: 29, y: 5 }, { x: 19, y: 5 }, { x: 19, y: 8 }, n4.pin('in0'));
+      b.wire({ x: 30, y: 9 }, { x: 30, y: 6 }, { x: 20, y: 6 }, { x: 20, y: 3 }, n3.pin('in1'));
       note(b, 16, -3, 'While EN = 1, Q follows D. When EN = 0, Q holds.');
     },
     'Gated D latch from four NAND gates and an inverter.',

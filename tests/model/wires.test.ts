@@ -3,7 +3,6 @@ import {
   analyzeConnectivity,
   idGenerator,
   normalizeWires,
-  pointKey,
   projectContext,
   type Circuit,
   type Point,
@@ -94,8 +93,8 @@ function connectionClasses(components: Circuit['components'], wires: Wire[], wit
       const onV = wire.x1 === wire.x2 && p.x === wire.x1 && p.y >= Math.min(wire.y1, wire.y2) && p.y <= Math.max(wire.y1, wire.y2);
       if (onH || onV) nets.add(conn.wireNet.get(wire.id)!);
     }
-    if (nets.size !== 1) return [[`inconsistent at ${pointKey(p.x, p.y)}: ${nets.size} nets`]];
-    add([...nets][0], pointKey(p.x, p.y));
+    if (nets.size !== 1) return [[`inconsistent at ${p.x},${p.y}: ${nets.size} nets`]];
+    add([...nets][0], `${p.x},${p.y}`);
   }
   return [...groups.values()].map((g) => [...g].sort()).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 }

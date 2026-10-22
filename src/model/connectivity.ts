@@ -75,7 +75,7 @@ export function analyzeConnectivity(circuit: Circuit, ctx: LayoutContext): Conne
 }
 
 function compute(circuit: Circuit, ctx: LayoutContext): Connectivity {
-  const nodeOf = new Map<string, number>();
+  const nodeOf = new Map<number, number>();
   const nodePoints: Point[] = [];
   const parent: number[] = [];
   const node = (x: number, y: number): number => {
@@ -103,7 +103,7 @@ function compute(circuit: Circuit, ctx: LayoutContext): Connectivity {
   };
 
   // Count connection "ends" per point for junction dots.
-  const degree = new Map<string, number>();
+  const degree = new Map<number, number>();
   const bump = (x: number, y: number, by = 1) => {
     const k = pointKey(x, y);
     degree.set(k, (degree.get(k) ?? 0) + by);

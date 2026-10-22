@@ -44,6 +44,8 @@ export interface Scene {
 
 const BIT_WIRE_PX = 2;
 const BUS_WIRE_PX = 3.5;
+/** Below this many pixels per grid unit, components are drawn as plain outlines. */
+const LOD_UNIT_PX = 6;
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement;
@@ -148,7 +150,7 @@ export class Renderer {
     }
 
     // Junction dots.
-    const pointNet = new Map<string, number>();
+    const pointNet = new Map<number, number>();
     for (const w of scene.circuit.wires) {
       const net = conn.wireNet.get(w.id);
       if (net === undefined) continue;
@@ -164,8 +166,10 @@ export class Renderer {
       ctx.fill();
     }
 
-    // Components.
-    for (const c of scene.circuit.components) {
+    // Components. Far out, symbols are only a few pixels across: draw batched outlines instead.
+    if (this.vp.unit < LOD_UNIT_PX) {
+      this.drawComponentsSimplified(p, scene, view);
+    } else for (const c of scene.circuit.components) {
       const rc = conn.components.get(c.id);
       if (!rc || !rectsIntersect(rc.bounds, view)) continue;
       const selected = scene.selection.components.has(c.id);
@@ -180,7 +184,7 @@ export class Renderer {
 
     // Open (unconnected) pins.
     ctx.lineWidth = 1.2 * p.px;
-    for (const net of conn.nets) {
+    if (this.vp.unit >= LOD_UNIT_PX) for (const net of conn.nets) {
       if (net.pins.length !== 1 || net.wireIds.length > 0) continue;
       const pin = net.pins[0];
       if (pin.x < view.x || pin.y < view.y || pin.x > view.x + view.w || pin.y > view.y + view.h) continue;
@@ -234,6 +238,39 @@ export class Renderer {
       ctx.strokeStyle = COLORS.selection;
       ctx.lineWidth = 1 * p.px;
       ctx.strokeRect(m.x, m.y, m.w, m.h);
+    }
+  }
+
+  private drawComponentsSimplified(p: Painter, scene: Scene, view: Rect): void {
+    const ctx = p.ctx;
+    const groups = new Map<string, Rect[]>();
+    const add = (color: string, r: Rect) => {
+      let list = groups.get(color);
+      if (!list) groups.set(color, (list = []));
+      list.push(r);
+    };
+    for (const c of scene.circuit.components) {
+      const rc = scene.conn.components.get(c.id);
+      if (!rc || !rectsIntersect(rc.bounds, view)) continue;
+      let color: string = COLORS.bodyStroke;
+      if (scene.selection.components.has(c.id)) color = COLORS.selection;
+      else if (scene.oscillating.has(c.id) || scene.problems.get(c.id) === 'error') color = COLORS.error;
+      else if (scene.problems.get(c.id) === 'warning') color = COLORS.warning;
+      else if ((c.type === 'input' || c.type === 'output' || c.type === 'led') && scene.values) {
+        const pin = rc.pins[0];
+        const net = pin ? scene.conn.pinNet.get(pinKey(c.id, pin.name)) : undefined;
+        if (net !== undefined) color = signalColor(scene.values.net(net), scene.values.contended(net));
+      }
+      add(color, rc.bounds);
+    }
+    ctx.lineWidth = 1 * p.px;
+    for (const [color, rects] of groups) {
+      ctx.beginPath();
+      for (const r of rects) ctx.rect(r.x, r.y, r.w, r.h);
+      ctx.fillStyle = COLORS.body;
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.stroke();
     }
   }
 

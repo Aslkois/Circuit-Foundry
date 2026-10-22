@@ -68,6 +68,14 @@ export function findCircuit(project: Project, id: string): Circuit | undefined {
   return project.circuits.find((c) => c.id === id);
 }
 
-export function pointKey(x: number, y: number): string {
-  return `${x},${y}`;
+const SMALL = 16384;
+
+/**
+ * Numeric key for an integer grid point, for maps and sets. Points within
+ * ±16383 (any realistic schematic) map to small integers below 2^30, which
+ * V8 stores unboxed; anything further out maps to a disjoint range above.
+ */
+export function pointKey(x: number, y: number): number {
+  if (x > -SMALL && x < SMALL && y > -SMALL && y < SMALL) return ((x + SMALL) << 15) | (y + SMALL);
+  return 2 ** 30 + (x + 2 ** 25) * 2 ** 26 + (y + 2 ** 25);
 }

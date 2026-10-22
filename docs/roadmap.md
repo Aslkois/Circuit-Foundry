@@ -21,6 +21,7 @@ Circuit Foundry grows in milestones. Each one ships working, tested features rat
 * Components can be rotated but not mirrored.
 * Wires do not route around components automatically.
 * The simulation runs on the main thread (with time budgets).
+* Every edit recompiles the edited circuit's connectivity and the flattened design. That is instant for typical designs and about 0.1 s for a flat circuit of 5 000 gates; hierarchical designs only recompute the circuit that changed.
 
 ## Milestone 2: memory and observation
 
@@ -36,6 +37,7 @@ Circuit Foundry grows in milestones. Each one ships working, tested features rat
 * Breakpoints on signal conditions; pause when a net changes or matches a value.
 * Per-component delay settings in the editor, for timing experiments (race conditions, setup and hold).
 * Simulation in a Web Worker for very large designs.
+* Incremental connectivity and compilation, so edits to very large flat circuits stay instant.
 
 ## Milestone 4: building processors
 
