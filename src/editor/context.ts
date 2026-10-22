@@ -32,6 +32,8 @@ export interface AppActions {
   openSample(id: string): void;
   openStored(id: string): void;
   saveNow(): void;
+  /** Write any pending change to storage now. */
+  flushSave(): Promise<void>;
 }
 
 export const ServicesContext = createContext<AppServices | null>(null);

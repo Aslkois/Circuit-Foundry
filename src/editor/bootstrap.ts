@@ -118,6 +118,7 @@ export async function bootstrap(): Promise<Boot> {
         store.notify(e instanceof Error ? e.message : String(e), 'error');
       }
     },
+    flushSave: () => autosave.flush(),
     saveNow: () => {
       void autosave.flush().then(() => {
         if (store.getState().saveStatus === 'saved') store.notify(repo.persistent ? 'Saved in this browser.' : 'Local storage is unavailable here: export the project to keep it.');

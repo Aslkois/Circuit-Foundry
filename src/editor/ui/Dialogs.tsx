@@ -37,11 +37,15 @@ export function ProjectsDialog({ onClose }: { onClose: () => void }): ReactEleme
 
   useEffect(() => {
     let live = true;
-    repo.list().then((list) => live && setProjects(list));
+    // Save pending edits first so the list shows the current project as it is.
+    actions
+      .flushSave()
+      .then(() => repo.list())
+      .then((list) => live && setProjects(list));
     return () => {
       live = false;
     };
-  }, [repo]);
+  }, [repo, actions]);
 
   const remove = async (p: StoredProjectSummary) => {
     if (p.id === currentId) return;

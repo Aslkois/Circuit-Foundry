@@ -314,3 +314,170 @@ test('places components by dragging them from the palette', async ({ page }) => 
   });
   expect(comp).toMatchObject({ type: 'and', x: 10, y: 4 });
 });
+
+async function circuitState(page: Page) {
+  return page.evaluate(() => {
+    const cf = (window as unknown as {
+      circuitFoundry: {
+        store: {
+          viewedCircuit: { components: { id: string; type: string; x: number; y: number; rotation: number; props: Record<string, unknown> }[]; wires: unknown[] };
+          getState(): { selection: { components: Set<string>; wires: Set<string> }; project: { name: string; mainCircuitId: string; circuits: { id: string; name: string }[] } };
+        };
+      };
+    }).circuitFoundry;
+    const s = cf.store.getState();
+    return {
+      components: cf.store.viewedCircuit.components,
+      wires: cf.store.viewedCircuit.wires.length,
+      selected: s.selection.components.size + s.selection.wires.size,
+      projectName: s.project.name,
+      main: s.project.mainCircuitId,
+      circuits: s.project.circuits.map((c) => c.name),
+    };
+  });
+}
+
+test('inspector edits, clipboard, nudging and selection shortcuts', async ({ page }) => {
+  await place(page, 'input', [0, 0], 'A');
+  await place(page, 'not', [6, 0]);
+  await place(page, 'output', [12, 0], 'Y');
+  await wire(page, [0, 0], [4, 0]);
+  await wire(page, [8, 0], [12, 0]);
+  await expect.poll(() => bits(page, 'c3', 'in')).toBe('1');
+
+  // Width change through the inspector creates a width conflict that the problems panel reports.
+  await clickAt(page, [6, 0]);
+  const width = page.getByLabel('Bit width');
+  await width.fill('4');
+  await width.press('Enter');
+  await expect(page.getByTestId('problems-toggle')).toContainText('2');
+  await page.getByTestId('problems-toggle').click();
+  await expect(page.locator('.problems')).toContainText('different bit widths');
+  await page.locator('.problems li.error').first().locator('button').click();
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await expect(page.getByTestId('problems-toggle')).toHaveText(/0\s*0\s*0/);
+
+  // Facing select rotates.
+  await clickAt(page, [6, 0]);
+  await page.getByLabel('Facing').selectOption('90');
+  await expect.poll(async () => (await circuitState(page)).components.find((c) => c.id === 'c2')?.rotation).toBe(90);
+  await page.keyboard.press('Control+z');
+
+  // Clipboard: copy/paste and duplicate add components; select all + delete removes everything; undo restores.
+  await clickAt(page, [6, 0]);
+  await page.keyboard.press('Control+c');
+  await page.keyboard.press('Control+v');
+  await expect.poll(async () => (await circuitState(page)).components.length).toBe(4);
+  await page.keyboard.press('Control+d');
+  await expect.poll(async () => (await circuitState(page)).components.length).toBe(5);
+  await page.keyboard.press('Control+a');
+  await expect.poll(async () => (await circuitState(page)).selected).toBeGreaterThan(5);
+  await page.keyboard.press('Delete');
+  await expect.poll(async () => (await circuitState(page)).components.length).toBe(0);
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Control+z');
+  await expect.poll(async () => (await circuitState(page)).components.length).toBe(3);
+
+  // Arrow keys nudge the selection, keeping it connected.
+  await clickAt(page, [12, 0]);
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Shift+ArrowDown');
+  await expect.poll(async () => (await circuitState(page)).components.find((c) => c.id === 'c3')?.y).toBe(6);
+  await expect.poll(() => bits(page, 'c3', 'in')).toBe('1');
+
+  // "Set value" on a new 3-bit input (placing selects it).
+  await place(page, 'input', [0, 12], 'V');
+  const w = page.getByLabel('Bit width');
+  await w.fill('3');
+  await w.press('Enter');
+  await page.getByLabel('Set value').fill('0b101');
+  await page.getByLabel('Set value').press('Enter');
+  await expect.poll(() => bits(page, 'c4', 'out')).toBe('101');
+  // Clicking a bit cell toggles just that bit (MSB is the leftmost cell).
+  await clickAt(page, [-3, 12]);
+  await expect.poll(() => bits(page, 'c4', 'out')).toBe('001');
+});
+
+test('simulation and view controls, dialogs and project management', async ({ page }) => {
+  await place(page, 'input', [0, 0], 'A');
+  for (let i = 0; i < 4; i++) await place(page, 'not', [4 + 4 * i, 0]);
+  await wire(page, [0, 0], [2, 0]);
+  for (let i = 0; i < 3; i++) await wire(page, [6 + 4 * i, 0], [6 + 4 * i + 2, 0]);
+  await expect.poll(() => bits(page, 'c5', 'out')).toBe('0');
+
+  // Manual propagation: with auto-propagate off, each Step advances one gate delay.
+  await page.getByLabel('Auto-propagate').uncheck();
+  await clickAt(page, [-1, 0]);
+  await expect(page.getByTestId('sim-state')).toContainText('Propagating');
+  const step = page.getByRole('button', { name: 'Step one gate delay' });
+  let steps = 0;
+  while ((await page.getByTestId('sim-state').textContent())?.includes('Propagating')) {
+    await step.click();
+    steps++;
+    if (steps > 20) break;
+  }
+  expect(steps).toBe(5); // the input source plus four inverters
+  expect(await bits(page, 'c5', 'out')).toBe('1');
+  await page.getByLabel('Auto-propagate').check();
+
+  // Reset returns inputs to power-on values.
+  await page.getByRole('button', { name: 'Reset simulation (all state and inputs)' }).click();
+  await expect.poll(() => bits(page, 'c1', 'out')).toBe('0');
+
+  // Zoom controls.
+  const zoomLabel = page.locator('.zoom-label');
+  const before = await zoomLabel.textContent();
+  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(zoomLabel).not.toHaveText(before!);
+  await zoomLabel.click();
+  await expect(zoomLabel).toHaveText('100%');
+  await page.getByRole('button', { name: 'Zoom out' }).click();
+  await expect(zoomLabel).toHaveText('80%');
+  await page.getByRole('button', { name: 'Fit circuit in view' }).click();
+  await expect(zoomLabel).not.toHaveText('80%');
+
+  // Tick rate selector.
+  await page.getByLabel('Tick rate').selectOption('64');
+  await expect(page.getByLabel('Tick rate')).toHaveValue('64');
+
+  // Help dialog opens and closes with Escape.
+  await page.getByRole('button', { name: 'Help and keyboard shortcuts' }).click();
+  await expect(page.getByRole('dialog')).toContainText('Keyboard and mouse');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  // Rename the project.
+  await page.locator('.project-name').click();
+  await page.getByLabel('Project name').fill('Inverter chain');
+  await page.getByLabel('Project name').press('Enter');
+  await expect.poll(async () => (await circuitState(page)).projectName).toBe('Inverter chain');
+
+  // Palette filter.
+  await page.getByLabel('Filter components').fill('nor');
+  await expect(page.locator('.palette-item')).toHaveCount(2);
+  await page.getByLabel('Filter components').fill('');
+
+  // New circuit, make it main, then delete it (after making Main the main circuit again).
+  await page.getByRole('button', { name: 'New circuit' }).click();
+  await page.getByLabel('Circuit name').fill('Scratch');
+  await page.getByLabel('Circuit name').press('Enter');
+  await page.getByRole('button', { name: 'Make this the main circuit' }).click();
+  await expect.poll(async () => (await circuitState(page)).main).not.toBe('main');
+  await page.locator('.circuit-list').getByRole('button', { name: 'Main', exact: true }).click();
+  await page.getByRole('button', { name: 'Make this the main circuit' }).click();
+  page.once('dialog', (d) => d.accept());
+  const scratch = page.locator('.circuit-row', { hasText: 'Scratch' });
+  await scratch.hover();
+  await scratch.getByRole('button', { name: 'Delete Scratch' }).click();
+  await expect.poll(async () => (await circuitState(page)).circuits).toEqual(['Main']);
+
+  // The projects dialog lists this project; a new blank project can be created and the old one reopened.
+  await page.getByTestId('projects-button').click();
+  await expect(page.locator('.project-list')).toContainText('Inverter chain');
+  await page.getByRole('button', { name: 'New blank project' }).click();
+  await expect(page.getByText('Empty circuit')).toBeVisible();
+  await page.getByTestId('projects-button').click();
+  await page.locator('.project-list .project-open', { hasText: 'Inverter chain' }).click();
+  await expect.poll(async () => (await circuitState(page)).components.length).toBe(5);
+});
