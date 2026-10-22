@@ -141,3 +141,46 @@ test('parametric component: bind widths to N, set N per instance, edit the symbo
   await expect.poll(() => bits(page, 'c3', 'in')).toBe('1010');
   await expect(page.getByTestId('problems-toggle')).toHaveText(/0\s*0\s*0/);
 });
+
+test('runs the 8-bit computer example and inspects live values deep inside MyCPU', async ({ page }) => {
+  await page.keyboard.press('Control+o');
+  await page.getByTestId('sample-computer').click();
+  await expect(page.locator('.breadcrumbs')).toContainText('8-bit computer');
+  await expect(page.getByTestId('problems-toggle')).toHaveText(/0\s*0\s*0/);
+
+  const top = (label: string) =>
+    page.evaluate((l) => {
+      const cf = (window as unknown as { circuitFoundry: { store: { viewedCircuit: { components: { id: string; type: string; props: Record<string, unknown> }[] } }; host: { valueAt(p: string[], c: string, n: string): { a: number; b: number } | null } } }).circuitFoundry;
+      const c = cf.store.viewedCircuit.components.find((k) => k.type === 'output' && k.props.label === l)!;
+      const v = cf.host.valueAt([], c.id, 'in');
+      return v && v.b === 0 ? v.a : null;
+    }, label);
+
+  // Run at full speed until the program halts; the last Fibonacci number written is 144.
+  await page.getByLabel('Tick rate').selectOption({ index: (await page.getByLabel('Tick rate').locator('option').count()) - 1 });
+  await page.getByTestId('run-button').click();
+  await expect.poll(() => top('HALT'), { timeout: 30_000 }).toBe(1);
+  await page.getByTestId('run-button').click();
+  expect(await top('OUT')).toBe(144);
+  expect(await top('ACC')).toBe(377 & 0xff);
+
+  // Look inside: computer → CPU → ALU → adder → full adder, all with live values of this instance.
+  const ids = await page.evaluate(() => {
+    const cf = (window as unknown as { circuitFoundry: { store: { getState(): { project: { circuits: { id: string; components: { id: string; type: string; props: Record<string, unknown> }[] }[] } } } } }).circuitFoundry;
+    const circuits = cf.store.getState().project.circuits;
+    const find = (circuit: string, label: string) => circuits.find((c) => c.id === circuit)!.components.find((k) => k.props.label === label)!.id;
+    return [find('computer', 'CPU'), find('mycpu', 'ALU'), find('alu8', 'ADDER'), find('adder8', 'FA0')];
+  });
+  for (const id of ids) {
+    await page.evaluate((i) => (window as unknown as { circuitFoundry: { store: { enterInstance(id: string): void } } }).circuitFoundry.store.enterInstance(i), id);
+  }
+  await expect(page.locator('.breadcrumbs')).toContainText('Full adder');
+  // Inside FA0 of the ALU's adder: A is bit 0 of the accumulator (377 & 0xff = 0x79, bit 0 = 1).
+  const inside = await page.evaluate((path) => {
+    const cf = (window as unknown as { circuitFoundry: { store: { viewedCircuit: { components: { id: string; props: Record<string, unknown> }[] } }; host: { valueAt(p: string[], c: string, n: string): { a: number; b: number } | null } } }).circuitFoundry;
+    const a = cf.store.viewedCircuit.components.find((k) => k.props.label === 'A')!;
+    return cf.host.valueAt(path, a.id, 'out');
+  }, ids);
+  expect(inside).toEqual({ width: 1, a: 1, b: 0 });
+  await page.screenshot({ path: 'test-results/computer-inside-full-adder.png' });
+});

@@ -37,7 +37,32 @@ export class ComponentHandle {
     if (!p) throw new Error(`${this.comp.id} has no port "${label}"`);
     return { x: p.x, y: p.y };
   }
+
+  /** Pin name of a subcircuit port by label. */
+  portPin(label: string): string {
+    const p = resolveComponent(this.comp, this.ctx).pins.find((x) => x.label === label);
+    if (!p) throw new Error(`${this.comp.id} has no port "${label}"`);
+    return p.name;
+  }
+
+  /** The side of the body a pin leaves from. */
+  side(name: string): PinSide {
+    const rc = resolveComponent(this.comp, this.ctx);
+    const p = rc.pins.find((x) => x.name === name);
+    if (!p) throw new Error(`${this.comp.type} ${this.comp.id} has no pin "${name}"`);
+    const b = rc.bounds;
+    if (p.x <= b.x) return 'left';
+    if (p.x >= b.x + b.w) return 'right';
+    if (p.y <= b.y) return 'up';
+    return 'down';
+  }
 }
+
+export type PinSide = 'left' | 'right' | 'up' | 'down';
+
+const SIDE_STEP: Record<PinSide, Point> = { left: { x: -1, y: 0 }, right: { x: 1, y: 0 }, up: { x: 0, y: -1 }, down: { x: 0, y: 1 } };
+/** Tunnel rotation whose body extends in the given direction from its pin. */
+const SIDE_TUNNEL: Record<PinSide, Rotation> = { left: 0, right: 180, up: 90, down: 270 };
 
 export class CircuitBuilder {
   readonly id: string;
@@ -94,6 +119,25 @@ export class CircuitBuilder {
   symbol(symbol: CircuitSymbol): this {
     this.symbolDef = symbol;
     return this;
+  }
+
+  /**
+   * Attach a pin to the net named `label`: a stub of `len` units straight out
+   * of the pin, ending in a tunnel. Tunnels with the same label connect.
+   */
+  tag(h: ComponentHandle, pin: string, label: string, len = 2): this {
+    const p = h.pin(pin);
+    const side = h.side(pin);
+    const d = SIDE_STEP[side];
+    const q = { x: p.x + d.x * len, y: p.y + d.y * len };
+    if (len > 0) this.wire(p, q);
+    this.add('tunnel', q.x, q.y, { label }, SIDE_TUNNEL[side]);
+    return this;
+  }
+
+  /** `tag` for a subcircuit port given by its label. */
+  tagPort(h: ComponentHandle, port: string, label: string, len = 2): this {
+    return this.tag(h, h.portPin(port), label, len);
   }
 
   /** Orthogonal polyline through the given points. */
