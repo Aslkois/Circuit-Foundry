@@ -1,0 +1,9 @@
+{
+  "//": "Engine, document model and samples. No DOM and no Node types: this code must run anywhere.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["src/engine", "src/model", "src/samples"]
+}
