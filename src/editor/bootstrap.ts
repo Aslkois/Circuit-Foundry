@@ -83,6 +83,13 @@ export async function bootstrap(): Promise<Boot> {
   const actions: AppActions = {
     openProjects: () => view.dialog.set('projects'),
     openHelp: () => view.dialog.set('help'),
+    createComponent: () => {
+      if (store.getState().selection.components.size === 0) {
+        store.notify('Select the components to turn into a new component first.', 'error');
+        return;
+      }
+      view.dialog.set('create-component');
+    },
     exportProject: () => {
       downloadProject({ ...store.getState().project, modifiedAt: nowIso() });
       store.notify('Project file exported.');

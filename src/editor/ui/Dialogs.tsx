@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
+import { ExtractError, extractComponent, uniqueCircuitName, type ExtractResult } from '../../model/index.ts';
 import { SAMPLES } from '../../samples/index.ts';
 import { useServices } from '../context.ts';
 import type { StoredProjectSummary } from '../state/persistence.ts';
@@ -118,6 +119,7 @@ const SHORTCUTS: [string, string][] = [
   ['Ctrl+Z / Ctrl+Shift+Z', 'Undo / redo (Ctrl+Y also redoes)'],
   ['Ctrl+C / X / V / D', 'Copy, cut, paste, duplicate'],
   ['Ctrl+A', 'Select all'],
+  ['Ctrl+G', 'Create a component from the selection'],
   ['Arrow keys', 'Nudge selection (Shift: 5 units) or pan'],
   ['Wheel / pinch', 'Zoom at the cursor'],
   ['Middle drag, Space+drag, right drag', 'Pan'],
@@ -143,7 +145,10 @@ export function HelpDialog({ onClose }: { onClose: () => void }): ReactElement {
             <li>Pick a component in the palette, then click on the canvas (or drag it over).</li>
             <li>Drag from a pin to draw a wire. Wires snap to the grid and bend at right angles; a wire ending on another wire joins it (a dot marks the junction). Crossing wires are not connected.</li>
             <li>Click the bits of an Input pin to change them. Values propagate immediately: bright green is 1, dark green 0, blue unknown (X), grey floating (Z), red a conflict between drivers, amber a multi-bit bus.</li>
-            <li>To make a reusable component, build a circuit with labelled Input and Output pins, then drag it from the Circuits list into another circuit.</li>
+            <li>
+              To make a reusable component, select part of a circuit and press Ctrl+G (Create component), or build a circuit with labelled Input and Output pins. Place it from the palette's "This project" group or the Circuits list. Every
+              instance shares the definition: edit it once and all instances update, each with its own state. Double-click an instance to look inside with live values.
+            </li>
             <li>Clocks advance with Run or Tick. Each tick is half a period of a 1:1 clock.</li>
           </ol>
           <h3>Timing model</h3>
@@ -168,6 +173,82 @@ export function HelpDialog({ onClose }: { onClose: () => void }): ReactElement {
           </table>
         </section>
       </div>
+    </Modal>
+  );
+}
+
+export function CreateComponentDialog({ onClose }: { onClose: () => void }): ReactElement {
+  const { store } = useServices();
+  const [state] = useState(() => store.getState());
+  const circuit = useMemo(() => store.viewedCircuit, [store]);
+  const [name, setName] = useState(() => uniqueCircuitName(state.project, 'Component'));
+  const trimmed = name.trim();
+  // A dry run shows the ports the component will get.
+  const preview = useMemo((): ExtractResult | string => {
+    try {
+      return extractComponent(state.project, circuit.id, state.selection.components, state.selection.wires, trimmed || 'Component');
+    } catch (e) {
+      if (e instanceof ExtractError) return e.message;
+      throw e;
+    }
+  }, [state, circuit, trimmed]);
+
+  const create = () => {
+    if (typeof preview === 'string' || !trimmed) return;
+    store.commit(preview.project, { components: new Set([preview.instanceId]), wires: new Set() });
+    const inner = preview.project.circuits.find((c) => c.id === preview.circuitId)!;
+    store.notify(
+      `Created "${inner.name}" with ${preview.ports.length} port${preview.ports.length === 1 ? '' : 's'}${preview.tunnels ? `; ${preview.tunnels} connection(s) use tunnels where no clean wire route existed` : ''}. Double-click it to look inside.`,
+    );
+    onClose();
+  };
+
+  return (
+    <Modal title="Create component" onClose={onClose}>
+      <form
+        className="create-component"
+        onSubmit={(e) => {
+          e.preventDefault();
+          create();
+        }}
+      >
+        <div className="field">
+          <label htmlFor="component-name">Name</label>
+          <input id="component-name" type="text" autoFocus value={name} onChange={(e) => setName(e.target.value)} onFocus={(e) => e.target.select()} />
+        </div>
+        {typeof preview === 'string' ? (
+          <p className="error-text">{preview}</p>
+        ) : (
+          <>
+            <p className="muted small">
+              The {state.selection.components.size} selected component(s) move into a new circuit and one instance takes their place. Signals crossing the edge of the selection become ports:
+            </p>
+            {preview.ports.length === 0 ? (
+              <p className="muted small">No signal crosses the edge of the selection, so the component will have no ports.</p>
+            ) : (
+              <table className="ports">
+                <tbody>
+                  {preview.ports.map((p) => (
+                    <tr key={`${p.dir}:${p.label}`}>
+                      <th scope="row">{p.dir}</th>
+                      <td>{p.label}</td>
+                      <td className="mono">{p.width}-bit</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+        <div className="button-row end">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={typeof preview === 'string' || !trimmed}>
+            Create
+          </button>
+        </div>
+      </form>
     </Modal>
   );
 }

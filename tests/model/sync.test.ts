@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   CircuitRunner,
+  PORT_SIDES,
+  circuitInterface,
+  setSymbolBody,
+  movePort,
+  setPortSide,
   ProjectBuilder,
   addComponents,
   analyzeConnectivity,
@@ -14,6 +19,7 @@ import {
   type Circuit,
   type Project,
 } from '../../src/model/index.ts';
+import { rippleAdderProject } from '../../src/samples/index.ts';
 
 /** "cell" = OR(A, B) → Y, used twice in "top" with every port wired. */
 function project(): Project {
@@ -151,5 +157,82 @@ describe('instance synchronization', () => {
     const probeNet = conn.pinNet.get(pinKey('pr', 'in'));
     expect(probeNet === undefined || conn.nets[probeNet].pins.length === 1).toBe(true);
     expect(portNets(r.project)['c1.B']).toEqual(['c4']);
+  });
+
+  it('re-routes swapped and re-sided ports, letting the new wires cross', () => {
+    const before = rippleAdderProject();
+    const sums = (q: Project) => {
+      const run = new CircuitRunner(q, 'adder4');
+      const out: (number | null)[] = [];
+      for (const [a, b, c] of [
+        [3, 5, 0],
+        [15, 1, 1],
+        [9, 6, 1],
+      ]) {
+        run.setMany({ A: a, B: b, Cin: c });
+        out.push(run.num('S'), run.num('Cout'));
+      }
+      return out;
+    };
+    const fa = findCircuit(before, 'full-adder')!;
+    const cout = fa.components.find((c) => c.type === 'output' && c.props.label === 'Cout')!.id;
+    const cin = fa.components.find((c) => c.type === 'input' && c.props.label === 'Cin')!.id;
+    const after = replaceCircuit(before, setPortSide(movePort(fa, cout, -1), cin, 'top'));
+    const r = syncInstances(before, after);
+    expect(r.disconnected).toEqual([]);
+    expect(sums(r.project)).toEqual(sums(before));
+    expect(new CircuitRunner(r.project, 'adder4').design.diagnostics).toEqual([]);
+  });
+
+  it('never connects pins that were not connected before (random interface edits)', () => {
+    let seed = 12345;
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    /** Partition of instance and component pins into nets, as "comp:pin" → net id. */
+    const pinNets = (q: Project) => {
+      const c = findCircuit(q, 'adder4')!;
+      const conn = analyzeConnectivity(c, projectContext(q));
+      const m = new Map<string, number>();
+      for (const n of conn.nets) for (const p of n.pins) m.set(`${p.componentId}:${p.pin}`, n.id);
+      return m;
+    };
+    let totalRerouted = 0;
+    let totalLost = 0;
+    for (let round = 0; round < 40; round++) {
+      const before = rippleAdderProject();
+      let fa = findCircuit(before, 'full-adder')!;
+      for (let k = 0, n = 1 + rand(3); k < n; k++) {
+        const ports = [...circuitInterface(fa).inputs, ...circuitInterface(fa).outputs];
+        const port = ports[rand(ports.length)].id;
+        switch (rand(3)) {
+          case 0:
+            fa = setPortSide(fa, port, PORT_SIDES[rand(4)]);
+            break;
+          case 1:
+            fa = movePort(fa, port, rand(2) ? 1 : -1);
+            break;
+          default:
+            fa = setSymbolBody(fa, { width: 4 + 2 * rand(5) });
+        }
+      }
+      const after = replaceCircuit(before, fa);
+      const r = syncInstances(before, after);
+      totalRerouted += r.rerouted;
+      totalLost += r.disconnected.length;
+      const was = pinNets(before);
+      const now = pinNets(r.project);
+      const groups = new Map<number, string[]>();
+      for (const [pin, net] of now) groups.set(net, [...(groups.get(net) ?? []), pin]);
+      for (const pins of groups.values()) {
+        const nets = new Set(pins.map((p) => was.get(p)));
+        expect(nets.size, `round ${round}: ${pins.join(' ')}`).toBe(1);
+      }
+      // Whatever stayed connected still computes the same sums.
+      if (r.disconnected.length === 0) expect(new CircuitRunner(r.project, 'adder4').design.diagnostics).toEqual([]);
+    }
+    // Most moved pins are re-routed.
+    expect(totalRerouted).toBeGreaterThan(5 * Math.max(1, totalLost));
   });
 });

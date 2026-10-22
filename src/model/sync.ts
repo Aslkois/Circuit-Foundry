@@ -1,8 +1,9 @@
-import { strOf } from './catalog/index.ts';
+import { strOf, type LayoutContext } from './catalog/index.ts';
+import { analyzeConnectivity, pinKey } from './connectivity.ts';
 import { wireIdGenerator } from './ids.ts';
 import { projectContext, resolveComponent } from './layout.ts';
 import { withNormalizedWires } from './edit.ts';
-import { findRoute, isEnd, onSegment } from './route.ts';
+import { connectTree, findRoute, isEnd, onSegment, segmentsClean } from './route.ts';
 import { pointKey, type Circuit, type Point, type Project, type Wire } from './types.ts';
 
 /*
@@ -89,7 +90,9 @@ export function syncInstances(before: Project, after: Project): SyncResult {
       }
     }
     if (moves.length === 0) return;
-    const r = rerouteMoves(circuit, moves, ctxAfter);
+    let r = rerouteMoves(circuit, moves, ctxAfter);
+    // Safety net: re-routing must never join nets that were separate. If it somehow would, detach instead.
+    if (!keepsNetsApart(old, ctxBefore, r.circuit, ctxAfter)) r = detachMoves(circuit, moves, ctxAfter);
     rerouted += r.rerouted;
     disconnected.push(...r.failed.map((m) => ({ circuitId: circuit.id, componentId: m.componentId, port: m.port, reason: 'no-route' as const })));
     if (r.circuit !== circuit) {
@@ -101,11 +104,59 @@ export function syncInstances(before: Project, after: Project): SyncResult {
   return { project: circuits ? { ...after, circuits } : after, rerouted, disconnected };
 }
 
+/** True when no net of `next` contains pins that were on different nets in `prev` (pins matched by component and name). */
+function keepsNetsApart(prev: Circuit, ctxPrev: LayoutContext, next: Circuit, ctxNext: LayoutContext): boolean {
+  const before = analyzeConnectivity(prev, ctxPrev);
+  const after = analyzeConnectivity(next, ctxNext);
+  for (const net of after.nets) {
+    let seen: number | undefined;
+    for (const p of net.pins) {
+      const n = before.pinNet.get(pinKey(p.componentId, p.pin));
+      if (n === undefined) continue;
+      if (seen === undefined) seen = n;
+      else if (seen !== n) return false;
+    }
+  }
+  return true;
+}
+
+/** Fallback: remove every wire touching a moved pin's new position, leaving those ports unconnected. */
+function detachMoves(circuit: Circuit, moves: readonly PinMove[], ctx: LayoutContext): { circuit: Circuit; rerouted: number; failed: PinMove[] } {
+  const wires = circuit.wires.filter((w) => !moves.some((m) => onSegment(w, m.to.x, m.to.y)));
+  return { circuit: withNormalizedWires(circuit, ctx, wires), rerouted: 0, failed: [...moves] };
+}
+
+/** Wires connected to a point through shared ends (wires are normalized, so junctions are ends). */
+function reachable(wires: readonly Wire[], from: Point): Set<Wire> {
+  const byEnd = new Map<number, Wire[]>();
+  for (const w of wires) {
+    for (const k of [pointKey(w.x1, w.y1), pointKey(w.x2, w.y2)]) {
+      const list = byEnd.get(k);
+      if (list) list.push(w);
+      else byEnd.set(k, [w]);
+    }
+  }
+  const seen = new Set<Wire>();
+  const stack = [pointKey(from.x, from.y)];
+  const visited = new Set<number>();
+  while (stack.length > 0) {
+    const k = stack.pop()!;
+    if (visited.has(k)) continue;
+    visited.add(k);
+    for (const w of byEnd.get(k) ?? []) {
+      if (seen.has(w)) continue;
+      seen.add(w);
+      stack.push(pointKey(w.x1, w.y1), pointKey(w.x2, w.y2));
+    }
+  }
+  return seen;
+}
+
 function touchesWire(wires: readonly Wire[], p: Point): boolean {
   return wires.some((w) => onSegment(w, p.x, p.y));
 }
 
-function rerouteMoves(circuit: Circuit, moves: readonly PinMove[], ctx: ReturnType<typeof projectContext>): { circuit: Circuit; rerouted: number; failed: PinMove[] } {
+function rerouteMoves(circuit: Circuit, moves: readonly PinMove[], ctx: LayoutContext): { circuit: Circuit; rerouted: number; failed: PinMove[] } {
   // Pins of the circuit after the edit; a route may only touch its own target pin.
   const pinKeys = new Set<number>();
   for (const c of circuit.components) for (const p of resolveComponent(c, ctx).pins) pinKeys.add(pointKey(p.x, p.y));
@@ -114,6 +165,7 @@ function rerouteMoves(circuit: Circuit, moves: readonly PinMove[], ctx: ReturnTy
   let wires: Wire[] = [...circuit.wires];
   // A wire ending on a moved pin, with nothing else meeting it there, is detached and re-routed from its far end.
   const plans: { move: PinMove; start: Point; lead: Wire | null; blocked?: boolean }[] = [];
+  // (start and blocked may be updated by the detours below)
   for (const m of moves) {
     const at = wires.filter((w) => onSegment(w, m.from.x, m.from.y));
     if (at.length === 0) continue;
@@ -137,25 +189,86 @@ function rerouteMoves(circuit: Circuit, moves: readonly PinMove[], ctx: ReturnTy
       plans.push({ move: m, start: m.from, lead: null, blocked: true });
     }
   }
-  if (plans.length === 0) return { circuit, rerouted: 0, failed: [] };
-
-  const gen = wireIdGenerator(circuit);
-  const failed: PinMove[] = [];
-  let rerouted = 0;
-  for (const plan of plans) {
-    const path = plan.blocked ? null : findRoute(plan.start, plan.move.to, plan.move.out, wires, pinKeys);
-    if (!path) {
-      if (plan.lead) wires.push(plan.lead);
-      failed.push(plan.move);
-      continue;
+  // A pin that moved onto a wire joins that wire's net. Wires of other nets there are detoured around the new
+  // pin position so the nets stay apart; a plan starting at that point continues from the detoured net.
+  const detourFailed: PinMove[] = [];
+  const genDetour = wireIdGenerator(circuit);
+  const ownOf = new Map<PinMove, Set<Wire>>();
+  for (const plan of plans) ownOf.set(plan.move, reachable(wires, plan.start));
+  for (const m of moves) {
+    const own = ownOf.get(m) ?? new Set<Wire>();
+    const foreign = wires.filter((w) => onSegment(w, m.to.x, m.to.y) && !own.has(w));
+    if (foreign.length === 0) continue;
+    const ends: Point[] = [];
+    for (const w of foreign) {
+      for (const e of [
+        { x: w.x1, y: w.y1 },
+        { x: w.x2, y: w.y2 },
+      ]) {
+        if ((e.x !== m.to.x || e.y !== m.to.y) && !ends.some((q) => q.x === e.x && q.y === e.y)) ends.push(e);
+      }
     }
-    rerouted++;
-    for (let i = 0; i + 1 < path.length; i++) {
-      const a = path[i];
-      const b = path[i + 1];
-      const id = i === 0 && plan.lead ? plan.lead.id : gen();
-      wires.push({ id, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    const rest = wires.filter((w) => !foreign.includes(w));
+    const tree = connectTree(ends, rest, pinKeys);
+    if (!tree) {
+      // Keeping the nets apart matters more than keeping this wire whole: the other net is split and reported.
+      detourFailed.push(m);
+      wires = rest;
+    } else {
+      wires = [...rest, ...tree.map((t) => ({ id: genDetour(), ...t }))];
+    }
+    for (const plan of plans) {
+      if (plan.move === m || plan.start.x !== m.to.x || plan.start.y !== m.to.y) continue;
+      if (ends.length > 0 && tree) plan.start = ends[0];
+      else plan.blocked = true;
     }
   }
-  return { circuit: withNormalizedWires(circuit, ctx, wires), rerouted, failed };
+  // Pins now sitting on their own net's wiring need no route.
+  const satisfied = new Set<PinMove>();
+  for (const plan of plans) {
+    if (plan.blocked) continue;
+    const touching = wires.filter((w) => onSegment(w, plan.move.to.x, plan.move.to.y));
+    if (touching.length === 0) continue;
+    const own = reachable(wires, plan.start);
+    if (touching.every((w) => own.has(w))) satisfied.add(plan.move);
+  }
+  if (plans.length === 0 && detourFailed.length === 0 && wires.length === circuit.wires.length && wires.every((w, i) => w === circuit.wires[i])) {
+    return { circuit, rerouted: 0, failed: [] };
+  }
+
+  type Plan = (typeof plans)[number];
+  const base = wires;
+  const todo = plans.filter((p) => !satisfied.has(p.move));
+  const attempt = (order: readonly Plan[]) => {
+    const gen = wireIdGenerator({ ...circuit, wires: base });
+    const out: Wire[] = [...base];
+    const failed: PinMove[] = [];
+    let rerouted = satisfied.size;
+    for (const plan of order) {
+      const path = plan.blocked ? null : findRoute(plan.start, plan.move.to, plan.move.out, out, pinKeys);
+      if (!path) {
+        // Put the old lead back only where it now touches nothing but its own far end.
+        if (plan.lead && segmentsClean([plan.lead], out, pinKeys, new Set([pointKey(plan.start.x, plan.start.y)]))) out.push(plan.lead);
+        failed.push(plan.move);
+        continue;
+      }
+      rerouted++;
+      for (let i = 0; i + 1 < path.length; i++) {
+        const a = path[i];
+        const b = path[i + 1];
+        const id = i === 0 && plan.lead ? plan.lead.id : gen();
+        out.push({ id, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+      }
+    }
+    return { wires: out, rerouted, failed };
+  };
+  // Routes can block each other (two ports swapping places): retry with the failed ones first.
+  let best = attempt(todo);
+  for (let i = 0; i < 3 && best.failed.length > 0; i++) {
+    const failedSet = new Set(best.failed);
+    const next = attempt([...todo.filter((p) => failedSet.has(p.move)), ...todo.filter((p) => !failedSet.has(p.move))]);
+    if (next.failed.length >= best.failed.length) break;
+    best = next;
+  }
+  return { circuit: withNormalizedWires(circuit, ctx, best.wires), rerouted: best.rerouted, failed: [...detourFailed, ...best.failed] };
 }

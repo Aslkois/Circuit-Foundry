@@ -22,3 +22,4 @@ export * from './params.ts';
 export * from './sync.ts';
 export { findRoute } from './route.ts';
 export * from './extract.ts';
+export * from './definition.ts';

@@ -3,7 +3,7 @@ import { analyzeConnectivity, type Connectivity, type LocalNet } from './connect
 import { createComponent, uniqueCircuitName, withNormalizedWires } from './edit.ts';
 import { circuitIdGenerator, idGenerator, wireIdGenerator } from './ids.ts';
 import { circuitInterface, projectContext, resolveComponent } from './layout.ts';
-import { findRoute, onSegment } from './route.ts';
+import { findComb, findRoute, onSegment, trimStubs } from './route.ts';
 import { pointKey, type Circuit, type ComponentInstance, type Point, type Project, type Rotation, type Wire } from './types.ts';
 import { unionRect, type Rect } from './geometry.ts';
 
@@ -251,9 +251,11 @@ function placeInstance(id: string, circuitId: string, centre: Point, comps: read
 }
 
 /**
- * Join every piece of each boundary net in `circuit` to its port: a clean
- * route from a contact point when one exists, else a tunnel at the contact
- * and one at the port.
+ * Join every piece of each boundary net in `circuit` to its port. Dead-end
+ * stubs left where the selection was are trimmed first; then all pieces of a
+ * net are joined with one comb (a spine with a leg per piece), or with
+ * separate clean routes, or, where neither exists, with a tunnel at the
+ * piece and one at the port.
  */
 function connectPieces(
   circuit: Circuit,
@@ -262,30 +264,45 @@ function connectPieces(
   portOf: (b: Boundary) => { at: Point; out: Point; label: string },
   onTunnel: () => void,
 ): Circuit {
-  const conn = analyzeConnectivity(circuit, ctx);
-  const wires: Wire[] = [...circuit.wires];
-  const comps: ComponentInstance[] = [...circuit.components];
   const pinKeys = new Set<number>();
   for (const c of circuit.components) for (const p of resolveComponent(c, ctx).pins) pinKeys.add(pointKey(p.x, p.y));
+  const trimmed = trimStubs(circuit.wires, pinKeys, boundaries.flatMap((b) => b.contacts));
+  const wires: Wire[] = trimmed.wires;
+  const base: Circuit = { ...circuit, wires: [...wires] };
+  const conn = analyzeConnectivity(base, ctx);
+  const comps: ComponentInstance[] = [...circuit.components];
   const genWire = wireIdGenerator(circuit);
   const genComp = idGenerator('c', circuit.components.map((c) => c.id));
   const tunnelLabels = new Set(circuit.components.filter((c) => c.type === 'tunnel').map((c) => strOf(c.props, 'label')));
+  const addSeg = (a: Point, b: Point) => wires.push({ id: genWire(), x1: a.x, y1: a.y, x2: b.x, y2: b.y });
 
+  let next = 0;
   for (const b of boundaries) {
+    const ends = b.contacts.map(() => trimmed.ends[next++]);
     const port = portOf(b);
-    const portNet = netAt(conn, circuit, port.at);
-    // Group contacts by the piece of the net they belong to in this circuit.
+    const portNet = netAt(conn, base, port.at);
+    // One start per piece of the net: the end nearest the port.
     const pieces = new Map<number, Point>();
-    for (const p of b.contacts) {
-      const n = netAt(conn, circuit, p);
-      if (n === null || n === portNet || pieces.has(n)) continue;
-      pieces.set(n, p);
+    const dist = (p: Point) => Math.abs(p.x - port.at.x) + Math.abs(p.y - port.at.y);
+    for (const p of ends) {
+      if (!p) continue;
+      const n = netAt(conn, base, p);
+      if (n === null || n === portNet) continue;
+      const best = pieces.get(n);
+      if (!best || dist(p) < dist(best)) pieces.set(n, p);
+    }
+    const starts = [...pieces.values()];
+    if (starts.length === 0) continue;
+    const comb = findComb(port.at, port.out, starts, wires, pinKeys);
+    if (comb) {
+      for (const sgm of comb) addSeg({ x: sgm.x1, y: sgm.y1 }, { x: sgm.x2, y: sgm.y2 });
+      continue;
     }
     let tunnelLabel: string | null = null;
-    for (const start of pieces.values()) {
+    for (const start of starts) {
       const path = findRoute(start, port.at, port.out, wires, pinKeys);
       if (path) {
-        for (let i = 0; i + 1 < path.length; i++) wires.push({ id: genWire(), x1: path[i].x, y1: path[i].y, x2: path[i + 1].x, y2: path[i + 1].y });
+        for (let i = 0; i + 1 < path.length; i++) addSeg(path[i], path[i + 1]);
         continue;
       }
       if (tunnelLabel === null) {
@@ -295,7 +312,7 @@ function connectPieces(
         tunnelLabel = label;
         comps.push({ id: genComp(), type: 'tunnel', x: port.at.x, y: port.at.y, rotation: tunnelRotation(port.out), props: { label } });
       }
-      comps.push({ id: genComp(), type: 'tunnel', x: start.x, y: start.y, rotation: tunnelRotation(awayFrom(conn, circuit, start)), props: { label: tunnelLabel } });
+      comps.push({ id: genComp(), type: 'tunnel', x: start.x, y: start.y, rotation: tunnelRotation(awayFrom(conn, base, start)), props: { label: tunnelLabel } });
       onTunnel();
     }
   }

@@ -40,6 +40,9 @@ export function installShortcuts(s: AppServices): () => void {
         case 'a':
           c?.selectAll();
           break;
+        case 'g':
+          s.actions.createComponent();
+          break;
         case 's':
           if (e.shiftKey) s.actions.exportProject();
           else s.actions.saveNow();

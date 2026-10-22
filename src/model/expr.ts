@@ -205,3 +205,17 @@ export function exprNames(text: string): string[] {
     return [];
   }
 }
+
+/** Rename a parameter inside an expression, keeping its formatting. Function names are left alone. */
+export function renameInExpr(text: string, from: string, to: string): string {
+  return text.replace(/0x[0-9a-fA-F]+|\d+|[A-Za-z_][A-Za-z0-9_]*/g, (m, offset: number) => {
+    if (m !== from) return m;
+    const rest = text.slice(offset + m.length).trimStart();
+    return rest.startsWith('(') ? m : to;
+  });
+}
+
+/** True for names reserved by the expression language. */
+export function isReservedName(name: string): boolean {
+  return Object.hasOwn(FUNCTIONS, name);
+}

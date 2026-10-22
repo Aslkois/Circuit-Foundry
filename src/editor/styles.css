@@ -1257,3 +1257,123 @@ kbd {
 .legend.written {
   color: #f0883e;
 }
+
+/* ------------------------------------------------- component definitions */
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.inspector-body .bind-toggle {
+  padding: 0 6px;
+  height: 18px;
+  font: italic 600 12px/1 Georgia, 'Times New Roman', serif;
+  color: var(--text-faint);
+  background: transparent;
+  border-color: var(--border);
+}
+
+.inspector-body .bind-toggle.on {
+  color: #e3b35b;
+  border-color: #8a6a2c;
+  background: rgba(227, 179, 91, 0.1);
+}
+
+.field input.bound {
+  border-color: #8a6a2c;
+}
+
+.definition-section {
+  margin-top: 6px;
+}
+
+.symbol-preview {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 8px;
+}
+
+.field-grid input {
+  width: 100%;
+  min-width: 0;
+}
+
+.port-editor,
+.param-editor {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.port-editor th,
+.param-editor th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-faint);
+  padding: 2px 4px 4px 0;
+}
+
+.port-editor td,
+.param-editor td {
+  padding: 2px 4px 2px 0;
+  vertical-align: middle;
+}
+
+.port-editor td:first-child {
+  word-break: break-all;
+}
+
+.port-editor select {
+  font-size: 12px;
+  padding: 1px 2px;
+}
+
+.port-editor td.order {
+  white-space: nowrap;
+}
+
+.inspector-body .port-editor .icon-button.small {
+  padding: 2px;
+}
+
+.param-editor input {
+  width: 100%;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 3px 5px;
+}
+
+.param-editor td:last-child {
+  width: 1%;
+}
+
+.dir-tag {
+  display: inline-block;
+  min-width: 24px;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.dir-tag.out {
+  color: var(--accent);
+}
+
+.button-row.end {
+  justify-content: flex-end;
+}

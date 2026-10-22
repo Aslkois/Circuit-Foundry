@@ -122,6 +122,46 @@ export function CircuitList(): ReactElement {
   );
 }
 
+/** Circuits of this project that can be placed in the circuit on screen, drawn with their real symbols. */
+function ProjectComponents({ filter }: { filter: string }): ReactElement | null {
+  const { store } = useServices();
+  const project = useEditor((s) => s.project);
+  const tool = useEditor((s) => s.tool);
+  useEditor((s) => s.path);
+  const viewedId = store.viewedCircuit.id;
+  const ctx = store.ctx;
+  const f = filter.trim().toLowerCase();
+  const usable = project.circuits.filter((c) => !wouldCreateCycle(project, viewedId, c.id) && (!f || c.name.toLowerCase().includes(f)));
+  if (usable.length === 0) return null;
+  return (
+    <div className="palette-group">
+      <h3>This project</h3>
+      <div className="palette-grid">
+        {usable.map((c) => {
+          const armed = tool.kind === 'place' && tool.type === 'subcircuit' && tool.props.circuit === c.id;
+          const iface = ctx.getInterface(c.id);
+          return (
+            <button
+              key={c.id}
+              className={`palette-item${armed ? ' armed' : ''}`}
+              draggable
+              onDragStart={(e) => startDrag(e, 'subcircuit', { circuit: c.id, label: '' })}
+              onClick={() => store.setTool(armed ? { kind: 'select' } : { kind: 'place', type: 'subcircuit', props: { circuit: c.id, label: '' }, rotation: 0 })}
+              title={`${c.name}${c.description ? `: ${c.description}` : ''}\nA component built in this project. Click, then click on the canvas, or drag it onto the canvas.`}
+              aria-label={`Component ${c.name}`}
+              aria-pressed={armed}
+              data-circuit={c.id}
+            >
+              <SymbolPreview type="subcircuit" props={{ circuit: c.id }} ctx={ctx} version={iface} />
+              <span>{c.name}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function Palette(): ReactElement {
   const { store } = useServices();
   const tool = useEditor((s) => s.tool);
@@ -146,6 +186,7 @@ export function Palette(): ReactElement {
       </header>
       <input className="palette-filter" placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter components" />
       <div className="palette-scroll">
+        <ProjectComponents filter={filter} />
         {groups.map(([category, defs]) => (
           <div key={category} className="palette-group">
             <h3>{category}</h3>

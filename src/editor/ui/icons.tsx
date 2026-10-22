@@ -23,6 +23,8 @@ const PATHS: Record<string, string> = {
   plus: 'M12 5v14M5 12h14',
   enter: 'M10 7l5 5-5 5M4 12h11M20 4v16',
   up: 'M12 19V5M6 11l6-6 6 6',
+  down: 'M12 5v14M6 13l6 6 6-6',
+  pack: 'M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8',
   copy: 'M9 9h10v10H9zM5 15V5h10',
   chip: 'M7 7h10v10H7zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4',
   edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',

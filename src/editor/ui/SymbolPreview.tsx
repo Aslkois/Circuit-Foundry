@@ -6,8 +6,28 @@ import { Viewport } from '../canvas/viewport.ts';
 
 const NO_SUBCIRCUITS: LayoutContext = { getInterface: () => undefined };
 
-/** Renders a component symbol with the same code as the main canvas. */
-export function SymbolPreview({ type, props, width = 44, height = 30 }: { type: string; props?: Props; width?: number; height?: number }): ReactElement {
+/**
+ * Renders a component symbol with the same code as the main canvas. Pass
+ * `ctx` to draw subcircuit symbols; `version` forces a redraw when the
+ * symbol changes without the props changing (an edited definition).
+ */
+export function SymbolPreview({
+  type,
+  props,
+  width = 44,
+  height = 30,
+  ctx: layoutCtx = NO_SUBCIRCUITS,
+  version,
+  maxUnit = 20,
+}: {
+  type: string;
+  props?: Props;
+  width?: number;
+  height?: number;
+  ctx?: LayoutContext;
+  version?: unknown;
+  maxUnit?: number;
+}): ReactElement {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
@@ -19,17 +39,17 @@ export function SymbolPreview({ type, props, width = 44, height = 30 }: { type: 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const comp = { id: 'preview', type, x: 0, y: 0, rotation: 0 as const, props: { ...defaultProps(def), ...props, label: '' } };
-    const rc = resolveComponent(comp, NO_SUBCIRCUITS);
+    const rc = resolveComponent(comp, layoutCtx);
     let r: Rect = rc.bounds;
     for (const pin of rc.pins) r = unionRect(r, { x: pin.x, y: pin.y, w: 0, h: 0 });
     const vp = new Viewport();
     vp.width = width;
     vp.height = height;
-    vp.fit(r, 0.4, 20);
+    vp.fit(r, 0.4, maxUnit);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const p = new Painter(ctx, vp, dpr);
     p.world();
     drawComponent(p, rc, { signals: null, selected: false, ghost: false });
-  }, [type, props, width, height]);
+  }, [type, props, width, height, layoutCtx, version, maxUnit]);
   return <canvas ref={ref} style={{ width, height }} aria-hidden="true" />;
 }

@@ -1,19 +1,23 @@
-import { useState, type ReactElement } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import { formatBinary, formatDecimal, formatHex, parseValue, type LogicValue } from '../../engine/logic.ts';
 import {
+  DefinitionError,
+  PARAM_PREFIX,
   analyzeConnectivity,
-  circuitInterface,
   findCircuit,
   getDef,
   intOf,
   normalizeProps,
   pinKey,
   setComponentProps,
+  setBinding,
   setRotation,
   strOf,
   usersOf,
   validatePropEdit,
+  type Circuit,
   type ComponentInstance,
+  type ParamDef,
   type PropDef,
   type PropValue,
   type Rotation,
@@ -22,6 +26,7 @@ import { useEditor, useServices, useSimStatus } from '../context.ts';
 import { useObservable } from '../state/observable.ts';
 import { Icon } from './icons.tsx';
 import { MemoryView } from './MemoryView.tsx';
+import { ParamEditor, SymbolEditor } from './DefinitionPanel.tsx';
 import { pinLocationLabel } from './WatchPanel.tsx';
 
 export function formatLogic(v: LogicValue | null): string {
@@ -40,7 +45,7 @@ const FACINGS: { value: Rotation; label: string }[] = [
   { value: 270, label: 'North (270°)' },
 ];
 
-function PropField({ def, comp, onError }: { def: PropDef; comp: ComponentInstance; onError: (msg: string | null) => void }): ReactElement {
+function PropField({ def, comp, onError, labelExtra }: { def: PropDef; comp: ComponentInstance; onError: (msg: string | null) => void; labelExtra?: ReactNode }): ReactElement {
   const { store } = useServices();
   const typeDef = getDef(comp.type)!;
   const current = normalizeProps(typeDef, comp.props).props[def.name];
@@ -123,9 +128,135 @@ function PropField({ def, comp, onError }: { def: PropDef; comp: ComponentInstan
   }
   return (
     <div className="field">
-      <label htmlFor={id}>{def.label}</label>
+      <div className="label-row">
+        <label htmlFor={id}>{def.label}</label>
+        {labelExtra}
+      </div>
       {input}
       {def.help && <small className="help">{def.help}</small>}
+    </div>
+  );
+}
+
+function BindToggle({ bound, label, onClick }: { bound: boolean; label: string; onClick: () => void }): ReactElement {
+  return (
+    <button
+      className={`bind-toggle${bound ? ' on' : ''}`}
+      aria-pressed={bound}
+      aria-label={bound ? `Unbind ${label}` : `Bind ${label} to a parameter expression`}
+      title={bound ? 'Remove the binding (keep the current value)' : 'Bind to an expression over this circuit\'s parameters'}
+      onClick={onClick}
+    >
+      ƒ
+    </button>
+  );
+}
+
+/** A property bound to an expression over the parameters of the circuit on screen. */
+function BindingField({ label, prop, comp, displayed }: { label: string; prop: string; comp: ComponentInstance; displayed: ComponentInstance | undefined }): ReactElement {
+  const { store } = useServices();
+  const expr = comp.bind?.[prop] ?? '';
+  const [text, setText] = useState(expr);
+  const [error, setError] = useState<string | null>(null);
+  const apply = (value: string | null) => {
+    try {
+      store.editViewed((c) => setBinding(c, comp.id, prop, value));
+      setError(null);
+    } catch (e) {
+      if (!(e instanceof DefinitionError)) throw e;
+      setError(e.message);
+    }
+  };
+  const id = `bind-${comp.id}-${prop}`;
+  const value = displayed?.props[prop];
+  return (
+    <div className="field">
+      <div className="label-row">
+        <label htmlFor={id}>{label}</label>
+        <BindToggle bound label={label} onClick={() => apply(null)} />
+      </div>
+      <input
+        id={id}
+        type="text"
+        className="mono bound"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => text.trim() !== expr && apply(text)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Escape') setText(expr);
+        }}
+      />
+      <small className="help">{value !== undefined ? `= ${String(value)} here` : ''}</small>
+      {error && <small className="error-text">{error}</small>}
+    </div>
+  );
+}
+
+/** Parameter values of a subcircuit instance ("@name" props). */
+function InstanceParams({ comp, target, parentHasParams, displayed }: { comp: ComponentInstance; target: Circuit; parentHasParams: boolean; displayed: ComponentInstance | undefined }): ReactElement | null {
+  const { store } = useServices();
+  const [error, setError] = useState<string | null>(null);
+  const params = target.params ?? [];
+  if (params.length === 0) return null;
+  const set = (p: ParamDef, text: string) => {
+    const t = text.trim();
+    const key = PARAM_PREFIX + p.name;
+    if (t === '') {
+      if (comp.props[key] === undefined) return;
+      const { [key]: _drop, ...rest } = comp.props;
+      store.editViewed((c, ctx) => setComponentProps({ ...c, components: c.components.map((k) => (k.id === comp.id ? { ...k, props: rest } : k)) }, comp.id, {}, ctx));
+      setError(null);
+      return;
+    }
+    const n = Number(t);
+    if (!Number.isInteger(n) || n < p.min || n > p.max) {
+      setError(`${p.name} must be a whole number from ${p.min} to ${p.max}.`);
+      return;
+    }
+    setError(null);
+    if (comp.props[key] !== n) store.editViewed((c, ctx) => setComponentProps(c, comp.id, { [key]: n }, ctx));
+  };
+  return (
+    <div className="definition-section">
+      <h3>Parameters</h3>
+      {params.map((p) => {
+        const key = PARAM_PREFIX + p.name;
+        if (comp.bind?.[key] !== undefined) return <BindingField key={`${key}:${comp.bind[key]}`} label={p.name} prop={key} comp={comp} displayed={displayed} />;
+        const v = comp.props[key];
+        const id = `iparam-${comp.id}-${p.name}`;
+        return (
+          <div className="field" key={`${key}:${String(v)}`}>
+            <div className="label-row">
+              <label htmlFor={id}>
+                {p.name}
+                {p.description ? ` — ${p.description}` : ''}
+              </label>
+              {parentHasParams && (
+                <BindToggle
+                  bound={false}
+                  label={p.name}
+                  onClick={() => store.editViewed((c) => setBinding(c, comp.id, key, String(typeof v === 'number' ? v : p.default)))}
+                />
+              )}
+            </div>
+            <input
+              id={id}
+              type="text"
+              inputMode="numeric"
+              className="mono"
+              defaultValue={typeof v === 'number' ? String(v) : ''}
+              placeholder={`${p.default} (default)`}
+              onBlur={(e) => set(p, e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            />
+            <small className="help">
+              {p.min}–{p.max}
+            </small>
+          </div>
+        );
+      })}
+      {error && <p className="error-text">{error}</p>}
     </div>
   );
 }
@@ -188,7 +319,7 @@ function LiveValues({ comp }: { comp: ComponentInstance }): ReactElement | null 
   const { store, host } = useServices();
   const path = useEditor((s) => s.path);
   useSimStatus();
-  const circuit = store.viewedCircuit;
+  const circuit = store.displayedCircuit;
   const node = host.nodeAt(path);
   if (!node || node.circuit !== circuit) return null;
   const conn = node.connectivity;
@@ -248,6 +379,8 @@ function ComponentInspector({ comp }: { comp: ComponentInstance }): ReactElement
   }
   const sub = comp.type === 'subcircuit' ? findCircuit(project, strOf(comp.props, 'circuit')) : undefined;
   const isSource = host.sourceKey(path, comp.id) !== null && comp.type === 'input';
+  const hasParams = (store.viewedCircuit.params?.length ?? 0) > 0;
+  const displayed = store.displayedCircuit.components.find((c) => c.id === comp.id);
   return (
     <div className="inspector-body">
       <h2>{sub ? sub.name : def.name}</h2>
@@ -270,9 +403,23 @@ function ComponentInspector({ comp }: { comp: ComponentInstance }): ReactElement
       <div className="fields">
         {def.props
           .filter((p) => !p.hidden)
-          .map((p) => (
-            <PropField key={`${p.name}=${String(normalizeProps(def, comp.props).props[p.name])}`} def={p} comp={comp} onError={setError} />
-          ))}
+          .map((p) =>
+            comp.bind?.[p.name] !== undefined ? (
+              <BindingField key={`${p.name}:${comp.bind[p.name]}`} label={p.label} prop={p.name} comp={comp} displayed={displayed} />
+            ) : (
+              <PropField
+                key={`${p.name}=${String(normalizeProps(def, comp.props).props[p.name])}`}
+                def={p}
+                comp={comp}
+                onError={setError}
+                labelExtra={
+                  hasParams && (p.kind === 'int' || p.kind === 'uint') ? (
+                    <BindToggle bound={false} label={p.label} onClick={() => store.editViewed((c) => setBinding(c, comp.id, p.name, String(normalizeProps(def, comp.props).props[p.name])))} />
+                  ) : undefined
+                }
+              />
+            ),
+          )}
         {comp.type !== 'text' && (
           <div className="field">
             <label htmlFor={`facing-${comp.id}`}>Facing</label>
@@ -291,6 +438,7 @@ function ComponentInspector({ comp }: { comp: ComponentInstance }): ReactElement
         )}
         {error && <p className="error-text">{error}</p>}
       </div>
+      {sub && <InstanceParams comp={comp} target={sub} parentHasParams={hasParams} displayed={displayed} />}
       {isSource && <InputValueEditor comp={comp} path={path} />}
       {(comp.type === 'ram' || comp.type === 'rom') && <MemoryView comp={comp} />}
       <LiveValues comp={comp} />
@@ -302,7 +450,7 @@ function WireInspector({ wireIds }: { wireIds: string[] }): ReactElement {
   const { store, host } = useServices();
   const path = useEditor((s) => s.path);
   useSimStatus();
-  const circuit = store.viewedCircuit;
+  const circuit = store.displayedCircuit;
   const conn = analyzeConnectivity(circuit, store.ctx);
   const nets = [...new Set(wireIds.map((id) => conn.wireNet.get(id)).filter((n): n is number => n !== undefined))];
   const node = host.nodeAt(path);
@@ -353,7 +501,6 @@ function CircuitInspector(): ReactElement {
   const project = useEditor((s) => s.project);
   useEditor((s) => s.path);
   const circuit = store.viewedCircuit;
-  const iface = circuitInterface(circuit);
   const users = usersOf(project, circuit.id);
   const update = (patch: { name?: string; description?: string }) => {
     store.commit({ ...project, circuits: project.circuits.map((c) => (c.id === circuit.id ? { ...c, ...patch } : c)) });
@@ -365,29 +512,9 @@ function CircuitInspector(): ReactElement {
         Circuit · {circuit.components.length} components · {circuit.wires.length} wire segments
       </p>
       <DescriptionField key={`${circuit.id}:${circuit.description ?? ''}`} value={circuit.description ?? ''} onCommit={(description) => update({ description })} />
-      <h3>Interface</h3>
-      {iface.inputs.length + iface.outputs.length === 0 ? (
-        <p className="muted small">No Input or Output pins. Add labelled pins to use this circuit as a component in other circuits.</p>
-      ) : (
-        <table className="ports">
-          <tbody>
-            {iface.inputs.map((p) => (
-              <tr key={p.id}>
-                <th scope="row">in</th>
-                <td>{p.label}</td>
-                <td className="mono">{p.width}-bit</td>
-              </tr>
-            ))}
-            {iface.outputs.map((p) => (
-              <tr key={p.id}>
-                <th scope="row">out</th>
-                <td>{p.label}</td>
-                <td className="mono">{p.width}-bit</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <SymbolEditor key={`sym:${circuit.id}`} circuit={circuit} />
+      <ParamEditor key={`par:${circuit.id}`} circuit={circuit} />
+      <h3>Usage</h3>
       <p className="muted small">{users.length === 0 ? 'Not used by other circuits.' : `Used in: ${users.map((u) => u.name).join(', ')}.`}</p>
       {project.mainCircuitId !== circuit.id ? (
         <button onClick={() => store.commit({ ...project, mainCircuitId: circuit.id })}>Make this the main circuit</button>
@@ -399,7 +526,7 @@ function CircuitInspector(): ReactElement {
 }
 
 export function Inspector(): ReactElement {
-  const { store } = useServices();
+  const { store, actions } = useServices();
   const selection = useEditor((s) => s.selection);
   useEditor((s) => s.project);
   const circuit = store.viewedCircuit;
@@ -417,6 +544,12 @@ export function Inspector(): ReactElement {
           {selection.components.size} component(s), {selection.wires.size} wire segment(s).
         </p>
         <p className="muted small">Drag to move · R to rotate · Ctrl+D to duplicate · Delete to remove.</p>
+        <div className="button-row">
+          <button onClick={() => actions.createComponent()} disabled={selection.components.size === 0}>
+            <Icon name="pack" size={14} /> Create component…
+          </button>
+        </div>
+        <p className="muted small">Turns the selection into a reusable component (Ctrl+G). Connections across the selection edge become its ports.</p>
       </div>
     );
   } else {
