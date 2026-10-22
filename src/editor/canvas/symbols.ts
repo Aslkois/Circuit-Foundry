@@ -429,6 +429,18 @@ const registerBox = (() => {
   }) as Draw;
 })();
 
+function memoryBox(kind: 'RAM' | 'ROM'): Draw {
+  const base = boxWithPins('', { A: 'A', D: 'D', WE: 'WE', Q: 'Q' }, ['CLK']);
+  return (p, rc, o) => {
+    base(p, rc, o);
+    const words = 2 ** intOf(rc.props, 'addrWidth');
+    const size = words >= 1024 ? `${words / 1024}K` : String(words);
+    const c = rotatePoint(0, kind === 'RAM' ? 0.2 : 0, rc.comp.rotation);
+    p.text(kind, rc.comp.x + c.x, rc.comp.y + c.y - 0.5, { size: 0.7, color: o.ghost ? COLORS.ghost : COLORS.text, bold: true });
+    p.text(`${size} × ${intOf(rc.props, 'width')}`, rc.comp.x + c.x, rc.comp.y + c.y + 0.5, { size: 0.55, color: COLORS.textDim, mono: true });
+  };
+}
+
 function subcircuit(): Draw {
   return (p, rc, o) => {
     const ctx = p.ctx;
@@ -504,6 +516,8 @@ const DRAW: Record<string, Draw> = {
   splitter: splitter(),
   dff,
   register: registerBox,
+  ram: memoryBox('RAM'),
+  rom: memoryBox('ROM'),
   subcircuit: subcircuit(),
   text: textNote(),
 };

@@ -1,4 +1,4 @@
-import { NetlistError, Simulator, findFeedbackLoops, fromUnsigned, logic, type LogicValue, type OscillationReport, type SimSnapshot } from '../../engine/index.ts';
+import { NetlistError, Simulator, findFeedbackLoops, fromUnsigned, logic, type LogicValue, type MemoryPort, type OscillationReport, type SimSnapshot } from '../../engine/index.ts';
 import {
   compileProject,
   findCircuit,
@@ -375,6 +375,22 @@ export class SimulationHost {
     const node = this.nodeAt(path);
     const net = node?.connectivity.pinNet.get(`${componentId}:${pin}`);
     return node && net !== undefined ? this.netValue(node, net) : null;
+  }
+
+  /** Contents access for a RAM or ROM in the instance at `path`. */
+  memory(path: readonly string[], componentId: string): MemoryPort | null {
+    const key = this.nodeAt(path)?.keys.get(componentId);
+    return key ? this.sim.memory(key) : null;
+  }
+
+  /** Write one word of a RAM directly (like a debugger) and propagate the result. */
+  writeMemory(path: readonly string[], componentId: string, addr: number, value: LogicValue): boolean {
+    const key = this.nodeAt(path)?.keys.get(componentId);
+    if (!key || !this.sim.memory(key)) return false;
+    this.sim.writeMemory(key, addr, value);
+    if (this.status.autoPropagate) this.settle();
+    else this.refreshState(true);
+    return true;
   }
 
   /** Internal state of a primitive-backed component (register contents etc.). */

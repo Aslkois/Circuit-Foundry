@@ -1,6 +1,7 @@
 import { contentionBits, isValidWidth, logic, resolveA, resolveB, widthMask, type LogicValue } from './logic.ts';
 import { NetlistError, type Netlist, type NetlistComponent } from './netlist.ts';
 import { defaultLibrary } from './primitives/index.ts';
+import { isMemoryBehavior, type MemoryPort } from './primitives/memory.ts';
 import { InputBehavior } from './primitives/sources.ts';
 import type { Behavior, EvalContext, PinSpec, PrimitiveLibrary, PrimitiveSpec } from './primitives/types.ts';
 import { EventQueue, type Bucket } from './scheduler.ts';
@@ -813,6 +814,26 @@ export class Simulator {
   componentState(key: string): unknown {
     const ci = this.byKey.get(key);
     return ci === undefined ? undefined : this.comps[ci].behavior.getState?.();
+  }
+
+  /** Direct access to the contents of a memory primitive (RAM, ROM), or null. */
+  memory(key: string): MemoryPort | null {
+    const ci = this.byKey.get(key);
+    if (ci === undefined) return null;
+    const b = this.comps[ci].behavior;
+    return isMemoryBehavior(b) ? b.memory : null;
+  }
+
+  /** Write a memory word directly (debugger-style) and re-evaluate the memory. Does not settle. */
+  writeMemory(key: string, addr: number, value: LogicValue): void {
+    const ci = this.byKey.get(key);
+    const mem = this.memory(key);
+    if (ci === undefined || !mem) throw new Error(`Component "${key}" is not a memory`);
+    if (!Number.isInteger(addr) || addr < 0 || addr >= mem.words) throw new Error(`Address ${addr} is outside 0..${mem.words - 1}`);
+    mem.write(addr, value.a, value.b);
+    const c = this.comps[ci];
+    c.behavior.evaluate(c);
+    this.unsettledSteps = 0;
   }
 
   /** Nets electrically joined to `n` through bit links (including `n`). */

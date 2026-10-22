@@ -1172,3 +1172,88 @@ kbd {
 .inspector-body .icon-button:hover {
   background: var(--panel-3);
 }
+
+/* ------------------------------------------------------------------ memory */
+
+.memory-view {
+  margin-top: 6px;
+}
+
+.memory-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.memory-toolbar select,
+.memory-toolbar .goto {
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+}
+
+.memory-toolbar .goto {
+  width: 82px;
+}
+
+.inspector-body .memory-toolbar button {
+  padding: 1px 7px;
+}
+
+.memory-grid {
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.memory-grid th {
+  color: var(--text-faint);
+  font-weight: normal;
+  padding: 1px 6px 1px 0;
+  text-align: right;
+}
+
+.memory-grid td {
+  padding: 0;
+  border: 1px solid transparent;
+}
+
+.memory-grid td.read {
+  border-color: var(--blue);
+}
+
+.memory-grid td.written {
+  background: rgba(240, 136, 62, 0.22);
+}
+
+.inspector-body .mem-cell {
+  border: none;
+  background: none;
+  padding: 1px 3px;
+  font: inherit;
+  border-radius: 2px;
+  color: var(--text);
+}
+
+.inspector-body .mem-cell:hover {
+  background: var(--panel-3);
+}
+
+.mem-input {
+  width: 64px;
+  font: inherit;
+  padding: 0 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+}
+
+.legend.read {
+  color: var(--blue);
+}
+
+.legend.written {
+  color: #f0883e;
+}

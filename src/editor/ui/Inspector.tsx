@@ -21,6 +21,7 @@ import {
 import { useEditor, useServices, useSimStatus } from '../context.ts';
 import { useObservable } from '../state/observable.ts';
 import { Icon } from './icons.tsx';
+import { MemoryView } from './MemoryView.tsx';
 import { pinLocationLabel } from './WatchPanel.tsx';
 
 export function formatLogic(v: LogicValue | null): string {
@@ -291,6 +292,7 @@ function ComponentInspector({ comp }: { comp: ComponentInstance }): ReactElement
         {error && <p className="error-text">{error}</p>}
       </div>
       {isSource && <InputValueEditor comp={comp} path={path} />}
+      {(comp.type === 'ram' || comp.type === 'rom') && <MemoryView comp={comp} />}
       <LiveValues comp={comp} />
     </div>
   );
