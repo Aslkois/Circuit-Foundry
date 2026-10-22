@@ -65,7 +65,10 @@ export interface CompiledDesign {
 
 export interface CompileOptions {
   library?: PrimitiveLibrary;
-  /** Maximum nesting depth (default 64). */
+  /**
+   * Safety limit on nesting depth (default 1000). Containment cycles are
+   * rejected, so real designs are bounded by their number of circuits.
+   */
   maxDepth?: number;
 }
 
@@ -244,7 +247,7 @@ class Node implements InstanceNode {
 
 export function compileProject(project: Project, rootCircuitId: string, options: CompileOptions = {}): CompiledDesign {
   const library = options.library ?? defaultLibrary;
-  const maxDepth = options.maxDepth ?? 64;
+  const maxDepth = options.maxDepth ?? 1000;
   const ctx = projectContext(project);
   const byId = new Map(project.circuits.map((c) => [c.id, c]));
   const diagnostics: Diagnostic[] = [];

@@ -64,7 +64,19 @@ function dominant(dx: number, dy: number): Point {
   return { x: 0, y: dy < 0 ? -1 : 1 };
 }
 
-export function extractComponent(project: Project, parentId: string, componentIds: ReadonlySet<string>, wireIds: ReadonlySet<string>, name: string): ExtractResult {
+export interface ExtractOptions {
+  /** New names for ports, keyed by the name the port would get automatically. */
+  readonly portLabels?: Readonly<Record<string, string>>;
+}
+
+export function extractComponent(
+  project: Project,
+  parentId: string,
+  componentIds: ReadonlySet<string>,
+  wireIds: ReadonlySet<string>,
+  name: string,
+  options: ExtractOptions = {},
+): ExtractResult {
   const parent = project.circuits.find((c) => c.id === parentId);
   if (!parent) throw new ExtractError(`Circuit "${parentId}" does not exist.`);
   const ctx = projectContext(project);
@@ -133,6 +145,21 @@ export function extractComponent(project: Project, parentId: string, componentId
     b.label = unique(named ? strOf(named.props, 'label') : part ? `${part.owner}.${part.port}` : b.dir === 'in' ? `in${nIn++}` : `out${nOut++}`);
   }
 
+  // Names chosen by the user replace the automatic ones (on new pins and on selected Input/Output pins).
+  const rename = (auto: string): string => {
+    const v = options.portLabels?.[auto]?.trim();
+    return v ? v : auto;
+  };
+  const finalLabels = new Map<string, string>();
+  for (const c of selected) if (c.type === 'input' || c.type === 'output') finalLabels.set(c.id, rename(strOf(c.props, 'label') || c.id));
+  for (const b of boundaries) if (!b.existingPort) b.label = rename(b.label);
+  const seenLabels = new Set<string>();
+  for (const label of [...finalLabels.values(), ...boundaries.filter((b) => !b.existingPort).map((b) => b.label)]) {
+    if (seenLabels.has(label)) throw new ExtractError(`Two ports would both be called "${label}". Give each port its own name.`);
+    seenLabels.add(label);
+  }
+  for (const b of boundaries) if (b.existingPort) b.label = finalLabels.get(b.existingPort.id)!;
+
   /* ---- The new circuit ---------------------------------------------------- */
 
   let box: Rect | null = null;
@@ -146,7 +173,9 @@ export function extractComponent(project: Project, parentId: string, componentId
   let inner: Circuit = {
     id: newId,
     name: uniqueCircuitName(project, name),
-    components: [...selected],
+    components: selected.map((c) =>
+      (c.type === 'input' || c.type === 'output') && finalLabels.get(c.id) !== (strOf(c.props, 'label') || c.id) ? { ...c, props: { ...c.props, label: finalLabels.get(c.id)! } } : c,
+    ),
     wires: parent.wires.filter((w) => moved.has(w.id)),
   };
   const anchorY = (b: Boundary) => Math.min(...b.contacts.map((p) => p.y));

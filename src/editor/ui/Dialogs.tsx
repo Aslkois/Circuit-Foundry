@@ -3,6 +3,7 @@ import { ExtractError, ProjectFormatError, extractComponent, importCircuits, imp
 import { SAMPLES } from '../../samples/index.ts';
 import { useServices } from '../context.ts';
 import { pickProjectFile, type StoredProjectSummary } from '../state/persistence.ts';
+import type { EditorState } from '../state/store.ts';
 import { Icon } from './icons.tsx';
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }): ReactElement {
@@ -177,21 +178,25 @@ export function HelpDialog({ onClose }: { onClose: () => void }): ReactElement {
   );
 }
 
+function dryRunExtract(state: EditorState, circuitId: string, name: string, portLabels: Record<string, string>): ExtractResult | string {
+  try {
+    return extractComponent(state.project, circuitId, state.selection.components, state.selection.wires, name || 'Component', { portLabels });
+  } catch (e) {
+    if (e instanceof ExtractError) return e.message;
+    throw e;
+  }
+}
+
 export function CreateComponentDialog({ onClose }: { onClose: () => void }): ReactElement {
   const { store } = useServices();
   const [state] = useState(() => store.getState());
   const circuit = useMemo(() => store.viewedCircuit, [store]);
   const [name, setName] = useState(() => uniqueCircuitName(state.project, 'Component'));
   const trimmed = name.trim();
-  // A dry run shows the ports the component will get.
-  const preview = useMemo((): ExtractResult | string => {
-    try {
-      return extractComponent(state.project, circuit.id, state.selection.components, state.selection.wires, trimmed || 'Component');
-    } catch (e) {
-      if (e instanceof ExtractError) return e.message;
-      throw e;
-    }
-  }, [state, circuit, trimmed]);
+  const [portNames, setPortNames] = useState<Record<string, string>>({});
+  // A dry run with the automatic names lists the ports; a second one applies the names typed here.
+  const base = useMemo(() => dryRunExtract(state, circuit.id, trimmed, {}), [state, circuit, trimmed]);
+  const preview = useMemo(() => dryRunExtract(state, circuit.id, trimmed, portNames), [state, circuit, trimmed, portNames]);
 
   const create = () => {
     if (typeof preview === 'string' || !trimmed) return;
@@ -216,28 +221,36 @@ export function CreateComponentDialog({ onClose }: { onClose: () => void }): Rea
           <label htmlFor="component-name">Name</label>
           <input id="component-name" type="text" autoFocus value={name} onChange={(e) => setName(e.target.value)} onFocus={(e) => e.target.select()} />
         </div>
-        {typeof preview === 'string' ? (
-          <p className="error-text">{preview}</p>
+        {typeof base === 'string' ? (
+          <p className="error-text">{base}</p>
         ) : (
           <>
             <p className="muted small">
-              The {state.selection.components.size} selected component(s) move into a new circuit and one instance takes their place. Signals crossing the edge of the selection become ports:
+              The {state.selection.components.size} selected component(s) move into a new circuit and one instance takes their place. Signals crossing the edge of the selection become ports; rename them here if you like:
             </p>
-            {preview.ports.length === 0 ? (
+            {base.ports.length === 0 ? (
               <p className="muted small">No signal crosses the edge of the selection, so the component will have no ports.</p>
             ) : (
-              <table className="ports">
+              <table className="ports port-names">
                 <tbody>
-                  {preview.ports.map((p) => (
+                  {base.ports.map((p) => (
                     <tr key={`${p.dir}:${p.label}`}>
                       <th scope="row">{p.dir}</th>
-                      <td>{p.label}</td>
+                      <td>
+                        <input
+                          type="text"
+                          aria-label={`Name of port ${p.label}`}
+                          value={portNames[p.label] ?? p.label}
+                          onChange={(e) => setPortNames({ ...portNames, [p.label]: e.target.value })}
+                        />
+                      </td>
                       <td className="mono">{p.width}-bit</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
+            {typeof preview === 'string' && <p className="error-text">{preview}</p>}
           </>
         )}
         <div className="button-row end">

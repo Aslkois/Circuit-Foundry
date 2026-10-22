@@ -8,7 +8,7 @@ Build once, reuse everywhere: an instance is a reference to the definition, not 
 
 There are three ways:
 
-* **From a selection.** Select part of a circuit and press **Ctrl+G** (or *Create component…* in the inspector). The dialog lists the ports the component will get before anything changes. The selection moves into a new circuit and one instance takes its place:
+* **From a selection.** Select part of a circuit and press **Ctrl+G** (or *Create component…* in the inspector). The dialog lists the ports the component will get before anything changes, and you can rename them there (names must be unique). The selection moves into a new circuit and one instance takes its place:
   * every signal that crosses the edge of the selection becomes a port, named after an Input/Output pin or tunnel on that net where there is one, or after a labelled port inside (`FA0.Cout`), else `in0`, `out0`, …;
   * Input and Output pins inside the selection stay ports with their labels, and are put back outside on the new instance so the circuit keeps its inputs and outputs;
   * both sides are rewired automatically: dead-end wire stubs are removed and each net is reconnected with a clean route (one that touches nothing else), joining several branches with a single spine. Only when no clean route exists is a pair of tunnels used instead, and the result says so.
@@ -61,7 +61,7 @@ Double-click an instance (or *Look inside* in its inspector) to open it with the
 ## State and dependencies
 
 * Every instance gets its own registers, flip-flops, latches and RAM contents. Two instances of the same RAM-based component store different data.
-* A circuit may not contain itself, directly or through other components: the editor refuses such placements, the compiler skips and reports cyclic instances, and nesting depth is capped at 64.
+* A circuit may not contain itself, directly or through other components: the editor refuses such placements, and the compiler skips and reports cyclic instances. Nesting depth is otherwise unlimited (a safety limit stops at 1 000 levels).
 * Feedback inside a circuit (latches, cross-coupled gates) and feedback between instances through wires are both fine: only the *containment* relation must be acyclic.
 
 ## How it is simulated

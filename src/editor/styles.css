@@ -1403,3 +1403,11 @@ kbd {
   align-items: center;
   gap: 8px;
 }
+
+.port-names input {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 3px 6px;
+}

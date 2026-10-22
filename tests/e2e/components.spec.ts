@@ -50,14 +50,20 @@ test('turns a selection into a component that keeps the circuit working', async 
   const dialog = page.getByRole('dialog', { name: 'Create component' });
   await expect(dialog).toBeVisible();
   // The ports are named after the pins they connect to.
-  for (const name of ['A', 'B', 'S', 'C']) await expect(dialog.locator('.ports')).toContainText(name);
-  await dialog.getByLabel('Name').fill('Adder core');
+  for (const name of ['A', 'B', 'S', 'C']) await expect(dialog.getByLabel(`Name of port ${name}`)).toHaveValue(name);
+  // Ports can be renamed before creating; duplicates are refused.
+  await dialog.getByLabel('Name of port S').fill('C');
+  await expect(dialog.locator('.error-text')).toContainText('both be called "C"');
+  await expect(dialog.getByRole('button', { name: 'Create' })).toBeDisabled();
+  await dialog.getByLabel('Name of port S').fill('SUM');
+  await dialog.getByLabel('Name', { exact: true }).fill('Adder core');
   await dialog.getByRole('button', { name: 'Create' }).click();
   await expect(page.locator('.notice')).toContainText('Created "Adder core" with 4 ports');
   await expect(page.locator('.notice')).not.toContainText('tunnel');
 
   // The new component appears in the palette and the circuit list.
   await expect(page.locator('.palette-item[aria-label="Component Adder core"]')).toBeVisible();
+  await expect(page.locator('.inspector .live-values')).toContainText('SUM');
   await expect(page.locator('.circuit-row', { hasText: 'Adder core' })).toBeVisible();
 
   // Same behaviour as before, now through the instance (c7).

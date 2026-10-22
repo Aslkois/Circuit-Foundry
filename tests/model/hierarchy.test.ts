@@ -261,3 +261,34 @@ describe('per-instance memory', () => {
     expect(r.num('Q2')).toBe(0); // never written in the second instance (RAM powers up as zeros)
   });
 });
+
+describe('deep nesting', () => {
+  it('compiles and simulates a chain of 300 nested components', () => {
+    const pb = new ProjectBuilder('p', 'Deep');
+    pb.circuit('l0', 'Level 0', (b) => {
+      const i = b.add('input', 0, 0, { label: 'in' });
+      const n = b.add('not', 4, 0);
+      const o = b.add('output', 8, 0, { label: 'out' });
+      b.wire(i.pin('out'), n.pin('in'));
+      b.wire(n.pin('out'), o.pin('in'));
+    });
+    const DEPTH = 300;
+    for (let k = 1; k <= DEPTH; k++) {
+      pb.circuit(`l${k}`, `Level ${k}`, (b) => {
+        const i = b.add('input', 0, 0, { label: 'in' });
+        const s = b.sub(`l${k - 1}`, 8, 0);
+        const o = b.add('output', 16, 0, { label: 'out' });
+        b.wire(i.pin('out'), s.port('in'));
+        b.wire(s.port('out'), o.pin('in'));
+      });
+    }
+    const r = new CircuitRunner(pb.build(`l${DEPTH}`));
+    expect(r.design.diagnostics).toEqual([]);
+    expect(r.design.instanceCount).toBe(DEPTH + 1);
+    expect(r.design.netlist.components.find((c) => c.type === 'not')!.key.split('/')).toHaveLength(DEPTH + 1);
+    r.set('in', 0);
+    expect(r.bits('out')).toBe('1');
+    r.set('in', 1);
+    expect(r.bits('out')).toBe('0');
+  });
+});

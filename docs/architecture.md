@@ -111,7 +111,7 @@ After every edit, `normalizeWires()` rewrites wires into a canonical form: colli
 * **Templates.** Each circuit is analysed once per distinct set of parameter values into a template: its primitives with pins in local *slot* numbers (one per net, plus isolated slots for pins on width-conflicting nets), its port slots, bit links and child instances. Templates are cached on the circuit's connectivity object, which is itself cached per circuit object and validated against the interfaces of the subcircuits it uses. Instantiating a template only offsets slot numbers; a final union-find over slots merges port nets into the nets outside and numbers the flat nets.
 * **Ports** merge the nets on an instance's pins with the nets of the Input/Output pins inside, so they add no delay and pass signals both ways (tri-state buses work across boundaries). At the root, Input pins become user-controlled sources.
 * **State** is per instance: every instance gets its own engine primitives, keyed by instance path (`c9/c2/c4`). The `InstanceNode` tree maps each instance's local nets to flat nets lazily, so the editor can show live values inside any instance.
-* **Cycles** are rejected at three levels: the editor will not place a circuit inside itself (`wouldCreateCycle`), the compiler skips cyclic instances and reports them, and nesting depth is capped (64).
+* **Cycles** are rejected at three levels: the editor will not place a circuit inside itself (`wouldCreateCycle`), the compiler skips cyclic instances and reports them, and a safety limit stops at 1 000 levels (since containment cannot be cyclic, real nesting depth is bounded by the number of circuits).
 
 ### Parameters (`params.ts`, `expr.ts`)
 

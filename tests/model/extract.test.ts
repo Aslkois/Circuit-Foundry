@@ -115,3 +115,21 @@ describe('create component from selection', () => {
     expect(inst.rotation).toBe(0);
   });
 });
+
+describe('naming ports when creating a component', () => {
+  it('uses the names given for new and existing ports, and rejects duplicates', () => {
+    const p = halfAdderProject();
+    const r = extractComponent(p, 'ha', new Set(['c3', 'c4']), new Set(), 'Core', { portLabels: { A: 'X', S: 'SUM', C: '  ' } });
+    expect(r.ports.map((x) => x.label).sort()).toEqual(['B', 'C', 'SUM', 'X']);
+    expect(table(r.project, 'ha', ['A', 'B'], ['S', 'C'])).toEqual(table(p, 'ha', ['A', 'B'], ['S', 'C']));
+    // The top-level pins keep their names; only the component's ports are renamed.
+    expect(findCircuit(r.project, 'ha')!.components.filter((c) => c.type === 'input').map((c) => c.props.label)).toEqual(['A', 'B']);
+
+    const all = findCircuit(p, 'ha')!;
+    const whole = extractComponent(p, 'ha', new Set(all.components.map((c) => c.id)), new Set(all.wires.map((w) => w.id)), 'HA', { portLabels: { A: 'IN_A' } });
+    expect(whole.ports.map((x) => x.label).sort()).toEqual(['B', 'C', 'IN_A', 'S']);
+    expect(table(whole.project, 'ha', ['A', 'B'], ['S', 'C'])).toEqual(table(p, 'ha', ['A', 'B'], ['S', 'C']));
+
+    expect(() => extractComponent(p, 'ha', new Set(['c3', 'c4']), new Set(), 'Core', { portLabels: { A: 'B' } })).toThrow(/both be called "B"/);
+  });
+});
