@@ -90,6 +90,7 @@ export async function bootstrap(): Promise<Boot> {
       }
       view.dialog.set('create-component');
     },
+    importComponents: () => view.dialog.set('import-components'),
     exportProject: () => {
       downloadProject({ ...store.getState().project, modifiedAt: nowIso() });
       store.notify('Project file exported.');

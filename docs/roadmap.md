@@ -13,19 +13,36 @@ Circuit Foundry grows in milestones. Each one ships working, tested features rat
 * Seven verified examples: gates, half and full adder, 4-bit ripple-carry adder, SR latch, gate-level D flip-flop, 4-bit register, 4 × 4 RAM from gates.
 * Unit, model, sample and end-to-end tests; benchmarks; headless command-line runner.
 
+## Hierarchical component system (done)
+
+Custom reusable circuits are a core part of the model, not an add-on (see [components.md](components.md)):
+
+* Create a component from any selection (Ctrl+G): boundary signals become named ports, both sides are rewired cleanly, behaviour is preserved, one undo step.
+* Unlimited nesting with cycle protection; instances reference shared definitions and keep independent state (registers, latches, RAM).
+* Custom symbols: ports on any side and in any order, clock markers, body width and text, with a live preview.
+* Live synchronization: editing a definition updates every instance and re-routes the wires around moved ports, never creating new connections (verified by a fuzz test).
+* Parametric components: integer parameters, property bindings with an expression language, per-instance values, parameters passed down through nested components.
+* Look inside any instance at any depth with its live values.
+* Compilation shares one template per definition and parameter set.
+* Import components (with their dependencies) from other projects, examples or files.
+* Tunnels (net labels).
+* RAM and ROM components with a memory viewer and editor.
+* The 8-bit computer example: MyCPU, an accumulator CPU built from gate-level components, running programs from ROM with RAM, a clock and I/O ([mycpu.md](mycpu.md)).
+* Project format version 2 (parameters, bindings, symbols) with migration from version 1.
+
 ### Known limitations
 
 * Signals are at most 32 bits wide.
 * Simulation state is not saved in project files (reopening starts from power-on).
-* Subcircuit symbols have a fixed appearance (inputs left, outputs right).
+* Parameters change property values, not structure: there is no generate-style replication (an N-bit adder from N full adders must be drawn for a fixed N).
 * Components can be rotated but not mirrored.
-* Wires do not route around components automatically.
+* Wires are not routed around component bodies (automatic re-routing avoids pins and other wires, not bodies).
 * The simulation runs on the main thread (with time budgets).
-* Every edit recompiles the edited circuit's connectivity and the flattened design. That is instant for typical designs and about 0.1 s for a flat circuit of 5 000 gates; hierarchical designs only recompute the circuit that changed.
+* Every edit recompiles the edited circuit's connectivity and the flattened design. That is instant for typical designs and about 0.1 s for a flat circuit of 5 000 gates; hierarchical designs only re-analyse the definitions that changed.
 
 ## Milestone 2: memory and observation
 
-* RAM and ROM primitives (configurable address and data width, separate or shared data bus), clearly marked as behavioural models, with a hex memory editor and live memory viewer that highlights the last accessed address.
+* ~~RAM and ROM primitives with a memory editor and viewer~~ (done).
 * Load and save memory images (raw binary and Intel HEX).
 * A state inspector listing every storage element (latch loops, flip-flops, registers, memories) in the design hierarchy.
 * Display devices: hex digit, 7-segment display, LED matrix. Input devices: keypad, DIP switches.
@@ -41,15 +58,16 @@ Circuit Foundry grows in milestones. Each one ships working, tested features rat
 
 ## Milestone 4: building processors
 
-* Datapath library examples built from gates: multiplexers, decoders, comparators, an ALU, a register file, a program counter.
-* An example CPU built entirely from the project's own components, with a documented instruction set.
-* Assembler integration: a text editor for programs, assembly against a user-defined instruction set description, loading the result into ROM/RAM.
+* ~~Datapath components from gates (multiplexer, decoder, adder, ALU) and an example CPU with a documented instruction set~~ (done: the 8-bit computer).
+* More datapath examples: comparators, a register file, a multi-cycle CPU with microcode.
+* Assembler integration in the editor: a text editor for programs, assembly against a user-defined instruction set description, loading the result into ROM/RAM. (A code-level assembler for MyCPU exists in `src/samples/mycpu-isa.ts`.)
 * Memory-mapped I/O devices (terminal, keyboard, display) and a processor debug view: program counter, registers, disassembly around the PC, single-instruction stepping.
 
 ## Milestone 5: scale and polish
 
-* Custom subcircuit appearance (port placement, shape, labels).
-* Mirroring, wire auto-routing and cleanup tools.
-* Component libraries shared between projects; import circuits from other projects.
+* ~~Custom subcircuit appearance~~ and ~~importing circuits from other projects~~ (done).
+* Generate-style replication for parametric components (N copies of a sub-block).
+* Mirroring, wire auto-routing around bodies, and cleanup tools.
+* Shared component libraries that update every project using them.
 * Saving directly to the local file system where the browser supports it.
 * Light theme, accessibility review, touch input.

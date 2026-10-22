@@ -88,7 +88,7 @@ A `Project` holds named `Circuit`s. A circuit has components (type, integer grid
 | `inputPort` / `outputPort` | Input and Output pins: a user-controlled source and an indicator at top level, ports inside a subcircuit |
 | `splitter` | compiles to bit links |
 | `subcircuit` | an instance of another circuit in the project |
-| `passive` | display only (LED, probe, text) |
+| `passive` | display only (LED, probe, text) or pure connectivity (tunnel) |
 
 ### Connectivity
 
@@ -97,7 +97,8 @@ A `Project` holds named `Circuit`s. A circuit has components (type, integer grid
 * a wire connects its endpoints;
 * wire ends and pins at the same point connect;
 * a wire end or pin on the interior of another wire connects to it (T junction, drawn with a dot);
-* wires that cross at interior points do **not** connect.
+* wires that cross at interior points do **not** connect;
+* tunnels with the same label connect, as if wired.
 
 Net width comes from the pins on the net; probes adapt to it. Disagreeing widths are reported, and those pins are isolated so the rest of the design still simulates.
 
@@ -105,13 +106,39 @@ After every edit, `normalizeWires()` rewrites wires into a canonical form: colli
 
 ### Hierarchy and compilation
 
-`compileProject(project, rootId)` flattens the hierarchy into one engine netlist. Each subcircuit instance is expanded in place, and the nets on an instance's ports are *merged* with the nets of the Input/Output pins inside. Ports therefore add no delay and pass signals in both directions, and every instance has its own state. Engine keys are instance paths (`c9/c2/c4`), and the compiled `InstanceNode` tree maps every instance's local nets to flat nets, so the editor can show live values inside any instance.
+`compileProject(project, rootId)` flattens the hierarchy into one engine netlist (`compile.ts`):
 
-Cycles are rejected at three levels: the editor will not place a circuit inside itself (`wouldCreateCycle`), the compiler skips cyclic instances and reports them, and nesting depth is capped.
+* **Templates.** Each circuit is analysed once per distinct set of parameter values into a template: its primitives with pins in local *slot* numbers (one per net, plus isolated slots for pins on width-conflicting nets), its port slots, bit links and child instances. Templates are cached on the circuit's connectivity object, which is itself cached per circuit object and validated against the interfaces of the subcircuits it uses. Instantiating a template only offsets slot numbers; a final union-find over slots merges port nets into the nets outside and numbers the flat nets.
+* **Ports** merge the nets on an instance's pins with the nets of the Input/Output pins inside, so they add no delay and pass signals both ways (tri-state buses work across boundaries). At the root, Input pins become user-controlled sources.
+* **State** is per instance: every instance gets its own engine primitives, keyed by instance path (`c9/c2/c4`). The `InstanceNode` tree maps each instance's local nets to flat nets lazily, so the editor can show live values inside any instance.
+* **Cycles** are rejected at three levels: the editor will not place a circuit inside itself (`wouldCreateCycle`), the compiler skips cyclic instances and reports them, and nesting depth is capped (64).
+
+### Parameters (`params.ts`, `expr.ts`)
+
+Circuits may declare integer parameters; component props may be bound to expressions over them (`bind`), including an instance's `@name` parameter values. `specialize(circuit, values)` evaluates the bindings and returns an ordinary circuit, cached per circuit object and value signature (and the circuit itself when nothing changes, so downstream caches keep hitting). Specialization happens before layout, connectivity and compilation, which therefore need no knowledge of parameters: `projectContext().getInterface(id, instanceProps)` returns the interface of the specialized circuit, so pin widths follow the instance's values. The stored props of a definition always hold the values for its defaults.
+
+### Symbols and interfaces (`layout.ts`, `catalog/subcircuit.ts`)
+
+`circuitInterface()` derives the ports from Input/Output pins and the optional `symbol` (side, slot, clock marker, body width and label), and interns structurally equal interfaces so that layout caches survive unrelated edits. The symbol layout centres the ports on each side two units apart; with the default placement it reproduces the original fixed layout, so older files keep their wiring.
+
+### Live synchronization (`sync.ts`, `route.ts`)
+
+The editor passes every commit through `syncInstances(before, after)`. For each instance that stayed in place but whose pins moved (because its definition's interface or its parameter values changed), the wire ending on each moved pin is detached and re-routed from its far end to the new position, as part of the same undo step:
+
+* `routeMaze` is a Dijkstra search over the grid (cost: length plus a penalty per bend). Paths may cross wires at right angles but never run along one, bend on one, or touch any pin or wire end other than their own start and target.
+* Wires of other nets that a moved pin now lands on are detoured around it (`connectTree` reconnects their ends).
+* Routes that block each other are retried in a different order.
+* `keepsNetsApart` then verifies that no two pins that were on different nets now share one; otherwise the moved pins are detached instead. A seeded fuzz test applies random interface edits and checks this invariant.
+
+Connections that cannot be preserved are reported, never silently merged.
+
+### Extraction and libraries (`extract.ts`, `library.ts`, `definition.ts`)
+
+`extractComponent()` turns a selection into a new circuit and an instance: nets crossing the selection boundary become named ports; both sides are reconnected after trimming dead-end stubs, with a comb (`findComb`) for multi-branch nets, single clean routes, or tunnel pairs as a last resort. `importCircuits()` copies circuits with their dependencies between projects, remapping ids and reusing identical circuits. `definition.ts` holds the pure operations behind the symbol and parameter editors (including renaming a parameter across bindings and instance values).
 
 ### Diagnostics
 
-Compilation reports unknown component types (preserved in the file, not simulated), invalid props, width conflicts, missing or recursive subcircuits, duplicate port labels and multiple non-tri-state drivers on one wire. At run time the editor adds oscillation and feedback-loop notes, mapped back to the circuit and components involved.
+Compilation reports unknown component types (preserved in the file, not simulated), invalid props, width conflicts, missing or recursive subcircuits, duplicate port labels, multiple non-tri-state drivers on one wire, parameter bindings that fail to evaluate and instance parameter values outside their range. Each definition is diagnosed once per parameter set, not once per instance. At run time the editor adds oscillation and feedback-loop notes, mapped back to the circuit and components involved.
 
 ### File format
 
@@ -141,9 +168,9 @@ EditorStore ──notify──► SimulationHost.sync() ─► compile + Simulat
 | Suite | What it covers |
 |-------|----------------|
 | `tests/engine` | value encoding, parsing and formatting; every gate against a scalar four-state reference model on every input combination (through both the kernel and behaviour paths); timing; glitches; order independence; contention; tri-state buses; floating inputs; oscillation; feedback analysis; gate-level latches and flip-flops; splitters; snapshots; budgeted settling; netlist validation |
-| `tests/model` | connectivity rules; wire canonicalization (including randomized connectivity invariance); compilation of nested subcircuits, per-instance state, tri-state across boundaries, splitters, recursion, width conflicts; file format round trips, migrations, readable errors, preservation of unknown data; edit operations |
-| `tests/samples` | every example compiles cleanly and round-trips; truth tables and sequential behaviour of each |
-| `tests/e2e` | in Chromium: build a half adder with the mouse and verify all four input combinations; reload; export and import into a fresh profile; undo/redo, rotate and delete; examples, looking inside an instance, running a clock; oscillation reporting; creating and reusing a custom component; drag-and-drop from the palette |
+| `tests/model` | connectivity rules; wire canonicalization (including randomized connectivity invariance); compilation of nested subcircuits, per-instance state (latches and RAM), tri-state across boundaries, splitters, recursion, width conflicts; parameters, bindings, shared templates, custom symbols, tunnels; instance synchronization (port added, moved, swapped, removed; blocked routes; a seeded fuzz test of the no-new-connections invariant); extraction (gates, whole circuits, feedback, nested instances); symbol and parameter editing; importing between projects; file format round trips, migrations, readable errors, preservation of unknown data; edit operations |
+| `tests/samples` | every example compiles cleanly and round-trips; truth tables and sequential behaviour of each; the 8-bit computer's building blocks against reference models and whole programs against an instruction-level emulator |
+| `tests/e2e` | in Chromium: build a half adder with the mouse and verify all four input combinations; reload; export and import into a fresh profile; undo/redo, rotate and delete; examples, looking inside an instance, running a clock; oscillation reporting; creating and reusing a custom component; drag-and-drop from the palette; create component from a selection; parametric component with bound widths and a symbol edit; running the 8-bit computer and reading values five levels deep; importing MyCPU into another project |
 
 ## Performance
 
@@ -154,14 +181,16 @@ EditorStore ──notify──► SimulationHost.sync() ─► compile + Simulat
 | 32-bit ripple-carry adder from gates | 163 primitives | ≈ 56 000 additions/s |
 | Shift register of flip-flop primitives | 10 000 flip-flops | ≈ 25 M evaluations/s |
 | Deep random logic with heavy glitching | 100 000 gates | ≈ 5 M events/s, ≈ 9 M evaluations/s |
-| Gate-level 4×4 RAM example | 258 primitives | ≈ 19 000 write+read cycles/s |
-| Compile a 1 537-instance hierarchy | 2 560 primitives | ≈ 40 ms |
+| Gate-level 4×4 RAM example | 258 primitives | ≈ 14 000 write+read cycles/s |
+| 8-bit computer running Fibonacci (gate-level MyCPU) | 154 primitives, 59 instances | ≈ 33 000 instructions/s |
+| Compile a 1 537-instance hierarchy | 2 560 primitives | ≈ 25–30 ms |
+| Compile 64 MyCPU instances | 3 649 instances, 9 088 primitives, 9 templates | ≈ 30 ms |
 
 The editor shows compile time, design size and, while running, ticks and events per second in the status bar.
 
 ## Extending
 
 * **A new primitive:** implement `PrimitiveSpec` in `src/engine/primitives`, register it in `primitives/index.ts`, and add engine tests.
-* **A new component type:** add a `ComponentTypeDef` in `src/model/catalog` (props, pin layout, simulation role) and a drawing function in `src/editor/canvas/symbols.ts`. Palette, inspector, persistence and compilation pick it up automatically.
+* **A new component type:** add a `ComponentTypeDef` in `src/model/catalog` (props, pin layout, simulation role) and a drawing function in `src/editor/canvas/symbols.ts`. Palette, inspector, persistence, compilation and parameter bindings pick it up automatically.
 * **Waveforms and logic analyzers:** `Simulator.step()` exposes per-step changes through `valueVersion`. A trace hook recording selected nets per time step slots in next to the existing oscillation sampler.
 * **Running in a worker:** `SimulationHost` is the only place that touches `Simulator`; it can be moved behind a message channel without changing the engine or the model.

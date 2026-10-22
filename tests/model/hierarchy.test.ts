@@ -215,3 +215,49 @@ describe('custom symbols', () => {
     expect(r.truthTable(['A', 'C', 'E'], ['Y']).map((row) => row.out[0])).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
   });
 });
+
+describe('per-instance memory', () => {
+  it('gives every instance of a RAM-based component its own contents', () => {
+    const pb = new ProjectBuilder('p', 'Mem');
+    pb.circuit('mem', 'Memory', (b) => {
+      const ram = b.add('ram', 20, 10, { addrWidth: 2, width: 4 });
+      b.tag(b.add('input', 0, 0, { label: 'A', width: 2 }), 'out', 'a');
+      b.tag(b.add('input', 0, 4, { label: 'D', width: 4 }), 'out', 'd');
+      b.tag(b.add('input', 0, 8, { label: 'WE' }), 'out', 'we');
+      b.tag(b.add('input', 0, 12, { label: 'CLK' }), 'out', 'clk');
+      b.tag(b.add('output', 40, 0, { label: 'Q', width: 4 }), 'in', 'q');
+      b.tag(ram, 'A', 'a').tag(ram, 'D', 'd').tag(ram, 'WE', 'we').tag(ram, 'CLK', 'clk').tag(ram, 'Q', 'q');
+    });
+    pb.circuit('top', 'Top', (b) => {
+      const shared = ['A', 'D', 'CLK'].map((l, k) => b.add('input', 0, 6 * k, { label: l, width: l === 'A' ? 2 : l === 'D' ? 4 : 1 }));
+      const we1 = b.add('input', 0, 30, { label: 'WE1' });
+      const we2 = b.add('input', 0, 36, { label: 'WE2' });
+      shared.forEach((h, k) => b.tag(h, 'out', ['a', 'd', 'clk'][k]));
+      b.tag(we1, 'out', 'we1').tag(we2, 'out', 'we2');
+      for (const [i, y] of [
+        [1, 0],
+        [2, 30],
+      ] as const) {
+        const m = b.sub('mem', 30, y);
+        b.tagPort(m, 'A', 'a').tagPort(m, 'D', 'd').tagPort(m, 'CLK', 'clk').tagPort(m, 'WE', `we${i}`).tagPort(m, 'Q', `q${i}`);
+        b.tag(b.add('output', 50, y, { label: `Q${i}`, width: 4 }), 'in', `q${i}`);
+      }
+    });
+    const r = new CircuitRunner(pb.build('top'));
+    expect(r.design.diagnostics).toEqual([]);
+    const write = (we: string, a: number, d: number) => {
+      r.setMany({ A: a, D: d, [we]: 1 });
+      r.set('CLK', 1);
+      r.set('CLK', 0);
+      r.set(we, 0);
+    };
+    write('WE1', 2, 5);
+    write('WE2', 2, 9);
+    write('WE1', 3, 1);
+    r.set('A', 2);
+    expect([r.num('Q1'), r.num('Q2')]).toEqual([5, 9]);
+    r.set('A', 3);
+    expect(r.num('Q1')).toBe(1);
+    expect(r.num('Q2')).toBe(0); // never written in the second instance (RAM powers up as zeros)
+  });
+});

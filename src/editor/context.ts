@@ -22,7 +22,7 @@ export interface ViewObservables {
   readonly zoom: Observable<number>;
   readonly pointer: Observable<Point | null>;
   readonly hover: Observable<HoverInfo | null>;
-  readonly dialog: Observable<'projects' | 'help' | 'create-component' | null>;
+  readonly dialog: Observable<'projects' | 'help' | 'create-component' | 'import-components' | null>;
 }
 
 export interface AppActions {
@@ -30,6 +30,8 @@ export interface AppActions {
   openHelp(): void;
   /** Ask for a name and turn the selection into a new component. */
   createComponent(): void;
+  /** Copy components from another project, an example or a file into this one. */
+  importComponents(): void;
   exportProject(): void;
   importProject(): void;
   newProject(): void;

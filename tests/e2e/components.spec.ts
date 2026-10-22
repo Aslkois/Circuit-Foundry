@@ -184,3 +184,25 @@ test('runs the 8-bit computer example and inspects live values deep inside MyCPU
   expect(inside).toEqual({ width: 1, a: 1, b: 0 });
   await page.screenshot({ path: 'test-results/computer-inside-full-adder.png' });
 });
+
+test('imports MyCPU from the example into a new project and places it', async ({ page }) => {
+  await page.getByRole('button', { name: 'Import components' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Import components' });
+  await dialog.getByTestId('import-sample-computer').click();
+  await dialog.getByLabel('MyCPU').check();
+  await expect(dialog).toContainText('Also brings: Half adder, Full adder, Mux 2:1, Adder (8-bit), Decoder 3→8, ALU (8-bit), Control unit.');
+  await dialog.getByRole('button', { name: 'Import' }).click();
+  await expect(page.locator('.notice')).toContainText('Imported MyCPU and 7 component(s) it uses');
+  await page.locator('.palette-item[aria-label="Component MyCPU"]').click();
+  await clickAt(page, [20, 10]);
+  await expect(page.locator('.inspector-body h2').first()).toHaveText('MyCPU');
+  await expect(page.getByTestId('problems-toggle')).toHaveText(/0\s*0\s*0/);
+  await expect(page.locator('.status-bar')).toContainText('58 instance(s)');
+
+  // Importing again reuses what is already there.
+  await page.getByRole('button', { name: 'Import components' }).click();
+  await dialog.getByTestId('import-sample-computer').click();
+  await dialog.getByLabel('ALU (8-bit)').check();
+  await dialog.getByRole('button', { name: 'Import' }).click();
+  await expect(page.locator('.notice')).toContainText('already in this project');
+});

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react';
-import { ExtractError, extractComponent, uniqueCircuitName, type ExtractResult } from '../../model/index.ts';
+import { ExtractError, ProjectFormatError, extractComponent, importCircuits, importOrder, parseProject, uniqueCircuitName, type ExtractResult, type Project } from '../../model/index.ts';
 import { SAMPLES } from '../../samples/index.ts';
 import { useServices } from '../context.ts';
-import type { StoredProjectSummary } from '../state/persistence.ts';
+import { pickProjectFile, type StoredProjectSummary } from '../state/persistence.ts';
 import { Icon } from './icons.tsx';
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }): ReactElement {
@@ -249,6 +249,134 @@ export function CreateComponentDialog({ onClose }: { onClose: () => void }): Rea
           </button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+/** Copy components (with everything they contain) from another project, an example or a file. */
+export function ImportComponentsDialog({ onClose }: { onClose: () => void }): ReactElement {
+  const { repo, store, actions } = useServices();
+  const currentId = store.getState().project.id;
+  const [stored, setStored] = useState<StoredProjectSummary[] | null>(null);
+  const [source, setSource] = useState<Project | null>(null);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    actions
+      .flushSave()
+      .then(() => repo.list())
+      .then((list) => live && setStored(list.filter((p) => p.id !== currentId)));
+    return () => {
+      live = false;
+    };
+  }, [repo, actions, currentId]);
+
+  const choose = (p: Project) => {
+    setSource(p);
+    setPicked(new Set());
+    setError(null);
+  };
+  const fromFile = async () => {
+    const file = await pickProjectFile();
+    if (!file) return;
+    try {
+      choose(parseProject(file.text).project);
+    } catch (e) {
+      setError(e instanceof ProjectFormatError ? e.message : `Could not read ${file.name}.`);
+    }
+  };
+  const doImport = () => {
+    if (!source || picked.size === 0) return;
+    const r = importCircuits(store.getState().project, source, [...picked]);
+    store.commit(r.project);
+    const names = [...picked].map((id) => source.circuits.find((c) => c.id === id)!.name);
+    const pickedAdded = [...picked].filter((id) => r.added.some((c) => c.id === r.idMap.get(id))).length;
+    const extra = r.added.length - pickedAdded;
+    store.notify(
+      r.added.length === 0
+        ? `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} already in this project.`
+        : `Imported ${names.join(', ')}${extra > 0 ? ` and ${extra} component(s) ${names.length === 1 ? 'it uses' : 'they use'}` : ''}. Find ${names.length === 1 ? 'it' : 'them'} in the palette under "This project".`,
+    );
+    onClose();
+  };
+
+  const needs = source ? importOrder(source, [...picked]) : [];
+  return (
+    <Modal title="Import components" onClose={onClose} wide>
+      <div className="projects-layout">
+        <section>
+          <h3>From</h3>
+          <p className="muted small">Components are copied into this project together with every component they contain.</p>
+          <div className="button-row">
+            <button onClick={fromFile}>
+              <Icon name="upload" size={14} /> Project file…
+            </button>
+          </div>
+          <ul className="project-list">
+            {SAMPLES.map((s) => (
+              <li key={s.id}>
+                <button className="project-open" onClick={() => choose(s.build())} data-testid={`import-sample-${s.id}`}>
+                  <strong>{s.name}</strong>
+                  <span className="muted small">Example</span>
+                </button>
+              </li>
+            ))}
+            {(stored ?? []).map((p) => (
+              <li key={p.id}>
+                <button className="project-open" onClick={() => repo.load(p.id).then(choose, (e: unknown) => setError(String(e)))}>
+                  <strong>{p.name}</strong>
+                  <span className="muted small">{p.circuitCount} circuit(s) · stored in this browser</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {error && <p className="error-text">{error}</p>}
+        </section>
+        <section>
+          <h3>{source ? `Components in "${source.name}"` : 'Components'}</h3>
+          {!source ? (
+            <p className="muted small">Choose a project, an example or a file.</p>
+          ) : (
+            <>
+              <ul className="import-list">
+                {source.circuits.map((c) => (
+                  <li key={c.id}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={picked.has(c.id)}
+                        onChange={(e) => {
+                          const next = new Set(picked);
+                          if (e.target.checked) next.add(c.id);
+                          else next.delete(c.id);
+                          setPicked(next);
+                        }}
+                      />
+                      <span>{c.name}</span>
+                    </label>
+                    {c.description && <span className="muted small">{c.description}</span>}
+                  </li>
+                ))}
+              </ul>
+              {needs.length > picked.size && (
+                <p className="muted small">
+                  Also brings: {needs.filter((id) => !picked.has(id)).map((id) => source.circuits.find((c) => c.id === id)!.name).join(', ')}.
+                </p>
+              )}
+              <div className="button-row end">
+                <button type="button" onClick={onClose}>
+                  Cancel
+                </button>
+                <button className="primary" disabled={picked.size === 0} onClick={doImport}>
+                  Import
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
     </Modal>
   );
 }

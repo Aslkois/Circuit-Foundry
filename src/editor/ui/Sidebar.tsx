@@ -23,7 +23,7 @@ function startDrag(e: DragEvent, type: string, props: Record<string, string | nu
 }
 
 export function CircuitList(): ReactElement {
-  const { store } = useServices();
+  const { store, actions } = useServices();
   const project = useEditor((s) => s.project);
   const rootId = useEditor((s) => s.rootCircuitId);
   const path = useEditor((s) => s.path);
@@ -58,9 +58,14 @@ export function CircuitList(): ReactElement {
     <section className="panel circuits" aria-label="Circuits">
       <header className="panel-header">
         <h2>Circuits</h2>
-        <button className="icon-button" title="New circuit" aria-label="New circuit" onClick={add}>
-          <Icon name="plus" />
-        </button>
+        <span className="header-actions">
+          <button className="icon-button" title="Import components from another project" aria-label="Import components" onClick={actions.importComponents}>
+            <Icon name="download" />
+          </button>
+          <button className="icon-button" title="New circuit" aria-label="New circuit" onClick={add}>
+            <Icon name="plus" />
+          </button>
+        </span>
       </header>
       <ul className="circuit-list">
         {project.circuits.map((c) => {

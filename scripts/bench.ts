@@ -8,6 +8,8 @@
 import { NetlistBuilder, Simulator, fromUnsigned, toUnsigned } from '../src/engine/index.ts';
 import { CircuitRunner, ProjectBuilder, compileProject } from '../src/model/index.ts';
 import { addersProject, ramProject } from '../src/samples/index.ts';
+import { computerProject } from '../src/samples/computer.ts';
+import { FIBONACCI, assemble, emulate } from '../src/samples/mycpu-isa.ts';
 
 interface Row {
   name: string;
@@ -191,6 +193,44 @@ function time<T>(fn: () => T): [T, number] {
   const project = { ...base, circuits: [...circuits, top], mainCircuitId: 'chain' };
   const [design, ms] = time(() => compileProject(project, 'chain'));
   rows.push({ name: 'Compile hierarchical design', size: `${design.instanceCount} instances`, ms, events: 0, evals: 0, note: `${design.netlist.components.length} primitives` });
+}
+
+/* 6. The gate-level 8-bit computer running a program ----------------------- */
+{
+  const words = assemble(FIBONACCI).words;
+  const ref = emulate(words, 0, 10_000);
+  const r = new CircuitRunner(computerProject(words), 'computer');
+  const e0 = r.sim.stats.events;
+  const v0 = r.sim.stats.evaluations;
+  let instructions = 0;
+  const RUNS = 20;
+  const [, ms] = time(() => {
+    for (let run = 0; run < RUNS; run++) {
+      r.set('RST', 1);
+      r.set('RST', 0);
+      while (r.num('HALT') !== 1) {
+        r.tick(2);
+        instructions++;
+      }
+      check(r.num('OUT') === ref.out[ref.out.length - 1], 'computer output');
+    }
+  });
+  rows.push({ name: '8-bit computer (MyCPU)', size: `${r.sim.componentCount} primitives`, ms, events: r.sim.stats.events - e0, evals: r.sim.stats.evaluations - v0, note: `${((instructions / ms) * 1000).toFixed(0)} instructions/s` });
+}
+
+/* 7. Compile many instances of a large component --------------------------- */
+{
+  const base = computerProject();
+  const pb = new ProjectBuilder('bench', 'Bench');
+  const N = 64;
+  const farm = pb.circuit('farm', 'Farm', (b) => {
+    for (let i = 0; i < N; i++) b.add('subcircuit', (i % 8) * 40, Math.floor(i / 8) * 40, { circuit: 'mycpu', label: '' });
+  });
+  const project = { ...base, circuits: [...base.circuits, farm], mainCircuitId: 'farm' };
+  compileProject(project, 'farm'); // warm the per-definition caches once, as the editor does
+  const [design, ms] = time(() => compileProject(project, 'farm'));
+  check(design.diagnostics.length === 0 && design.templateCount === 9, 'cpu farm compiles');
+  rows.push({ name: `Compile ${N} MyCPU instances`, size: `${design.instanceCount} instances`, ms, events: 0, evals: 0, note: `${design.netlist.components.length} primitives, ${design.templateCount} shared templates` });
 }
 
 const pad = (s: string, n: number) => s.padEnd(n);
