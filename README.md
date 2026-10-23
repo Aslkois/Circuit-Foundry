@@ -6,6 +6,12 @@ Everything runs in the browser. There is no backend, account or hosted service: 
 
 > **Status:** milestone 1 and the hierarchical component system are complete: the editor, the simulation engine, reusable and parametric components with custom symbols, live synchronization of instances, saving/loading, and eight verified examples up to an 8-bit computer whose CPU is built from gates. See [docs/roadmap.md](docs/roadmap.md) for what comes next.
 
+## Try it online
+
+Once GitHub Pages is enabled for this repository, the editor is published at **https://aslkois.github.io/Circuit-Foundry/** on every push to `main` (workflow: [.github/workflows/pages.yml](.github/workflows/pages.yml)). It is a static site; projects stay in your browser's storage.
+
+To turn it on once: *Settings → Pages → Build and deployment → Source: GitHub Actions*, then push to `main` or run the workflow from the *Actions* tab.
+
 ## Quick start
 
 Requirements: Node.js 20.19+ (22 LTS recommended) and npm.
